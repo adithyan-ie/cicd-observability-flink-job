@@ -1,0 +1,32 @@
+# Maven
+target/
+*.class
+*.jar
+!**/src/main/**/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# Flink state
+/tmp/flink-checkpoints/
+/tmp/flink-savepoints/
+/tmp/rocksdb/
+
+# Logs
+*.log
+logs/
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit these)
+**/secrets.yaml
+**/*-secret.yaml

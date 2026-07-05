@@ -1,0 +1,62 @@
+-- ── PostgreSQL schema for CI/CD Observability Flink results ─────────────────
+-- Run this once before deploying the Flink job.
+
+-- DORA metrics + health scores + late event metrics
+CREATE TABLE IF NOT EXISTS cicd_metrics (
+    id               BIGSERIAL        PRIMARY KEY,
+    metric_type      VARCHAR(60)      NOT NULL,
+    pipeline_id      VARCHAR(200)     NOT NULL,
+    service_name     VARCHAR(200),
+    window_start_ms  BIGINT,
+    window_end_ms    BIGINT,
+    value            DOUBLE PRECISION,
+    performance_band VARCHAR(20),
+    sample_count     BIGINT,
+    detail           TEXT,
+    computed_at_ms   BIGINT,
+    inserted_at      TIMESTAMPTZ      DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cicd_metrics_type_pipeline
+    ON cicd_metrics (metric_type, pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_cicd_metrics_window
+    ON cicd_metrics (window_start_ms, window_end_ms);
+CREATE INDEX IF NOT EXISTS idx_cicd_metrics_service
+    ON cicd_metrics (service_name);
+
+-- CEP alerts + pattern timeouts + late event audit records
+CREATE TABLE IF NOT EXISTS cicd_alerts (
+    id          BIGSERIAL    PRIMARY KEY,
+    alert_type  VARCHAR(60)  NOT NULL,
+    payload     JSONB        NOT NULL,
+    inserted_at TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cicd_alerts_type
+    ON cicd_alerts (alert_type);
+CREATE INDEX IF NOT EXISTS idx_cicd_alerts_payload
+    ON cicd_alerts USING gin(payload);
+CREATE INDEX IF NOT EXISTS idx_cicd_alerts_inserted
+    ON cicd_alerts (inserted_at);
+
+-- Grafana dashboard user (read-only)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'grafana_reader') THEN
+        CREATE ROLE grafana_reader LOGIN PASSWORD 'grafana_readonly';
+    END IF;
+END $$;
+GRANT SELECT ON cicd_metrics TO grafana_reader;
+GRANT SELECT ON cicd_alerts  TO grafana_reader;
+
+-- Flink writer user
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'flink') THEN
+        CREATE ROLE flink LOGIN PASSWORD 'flink_secret';
+    END IF;
+END $$;
+GRANT INSERT, SELECT ON cicd_metrics TO flink;
+GRANT INSERT, SELECT ON cicd_alerts  TO flink;
+GRANT USAGE, SELECT ON SEQUENCE cicd_metrics_id_seq TO flink;
+GRANT USAGE, SELECT ON SEQUENCE cicd_alerts_id_seq  TO flink;

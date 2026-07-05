@@ -1,0 +1,211 @@
+package com.cicd.observability.operators.dora;
+
+import com.cicd.observability.model.CicdEvent;
+import com.cicd.observability.model.MetricResult;
+import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.util.Collector;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * DORA Metrics #2, #3, #4
+ *
+ * Lead Time for Changes — KeyedProcessFunction with MapState
+ *   Stores BUILD_STARTED timestamp per pipeline, computes duration
+ *   when DEPLOY_SUCCESS arrives for the same pipeline.
+ *   Flink managed MapState survives crashes and restarts.
+ *
+ * Change Failure Rate — TumblingEventTimeWindows + AggregateFunction
+ *   Counts total deploys and failed deploys in a 7-day window.
+ *
+ * Mean Time to Recovery — KeyedProcessFunction with MapState
+ *   Stores INCIDENT_OPEN timestamp keyed by pipelineId,
+ *   computes duration when BUILD_SUCCESS follows.
+ */
+public class DoraOperators {
+
+    // ══════════════════════════════════════════════════════════════════
+    // #2 — Lead Time for Changes
+    // ══════════════════════════════════════════════════════════════════
+
+    public static DataStream<MetricResult> leadTime(DataStream<CicdEvent> events) {
+        return events
+                .filter(e -> "BUILD_STARTED".equals(e.getEventType())
+                          || "DEPLOY_SUCCESS".equals(e.getEventType()))
+                .keyBy(CicdEvent::getPipelineId)
+                .process(new LeadTimeProcessFn());
+    }
+
+    static class LeadTimeProcessFn
+            extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
+
+        /**
+         * Flink MapState — keyed by commitSha, stores build-start epoch-ms.
+         * Lives in Flink's managed state (RocksDB in production) — not a
+         * Java Map in memory, so it survives job restarts automatically.
+         */
+        private transient MapState<String, Long> buildStartTimes;
+        private transient ValueState<List<Double>> leadTimeSamples;
+
+        @Override
+        public void open(Configuration cfg) {
+            buildStartTimes = getRuntimeContext().getMapState(
+                    new MapStateDescriptor<>("build-start-times", Types.STRING, Types.LONG));
+            leadTimeSamples = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("lead-time-samples",
+                            Types.LIST(Types.DOUBLE)));
+        }
+
+        @Override
+        public void processElement(CicdEvent e, Context ctx,
+                                   Collector<MetricResult> out) throws Exception {
+            if ("BUILD_STARTED".equals(e.getEventType())) {
+                // Store the timestamp keyed by commitSha so we can match
+                // it when the deploy event for the same commit arrives.
+                buildStartTimes.put(e.getCommitSha(), e.getTimestampMs());
+
+            } else if ("DEPLOY_SUCCESS".equals(e.getEventType())) {
+                Long startMs = buildStartTimes.get(e.getCommitSha());
+                if (startMs != null) {
+                    double leadMins = (e.getTimestampMs() - startMs) / 60_000.0;
+                    List<Double> samples = leadTimeSamples.value();
+                    if (samples == null) samples = new ArrayList<>();
+                    samples.add(leadMins);
+                    leadTimeSamples.update(samples);
+                    buildStartTimes.remove(e.getCommitSha());
+
+                    // Emit a rolling sample for Grafana dashboards
+                    MetricResult r = new MetricResult(
+                            MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
+                            e.getPipelineId(), e.getServiceName(),
+                            startMs, e.getTimestampMs(), leadMins, 1);
+                    out.collect(r);
+                }
+            }
+        }
+
+        @Override
+        public void onTimer(long ts, OnTimerContext ctx,
+                            Collector<MetricResult> out) throws Exception {
+            // No timer needed — we emit on every deploy event
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // #3 — Change Failure Rate
+    // ══════════════════════════════════════════════════════════════════
+
+    public static DataStream<MetricResult> changeFailureRate(
+            DataStream<CicdEvent> events, Time windowSize) {
+
+        return events
+                .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType())
+                          || "DEPLOY_FAILED".equals(e.getEventType()))
+                .keyBy(CicdEvent::getPipelineId)
+                .window(TumblingEventTimeWindows.of(windowSize))
+                .aggregate(new CfrAgg(), new CfrWindowFn());
+    }
+
+    static class CfrAcc {
+        long total = 0, failed = 0;
+        String serviceName = "";
+    }
+
+    static class CfrAgg implements AggregateFunction<CicdEvent, CfrAcc, CfrAcc> {
+        @Override public CfrAcc createAccumulator() { return new CfrAcc(); }
+
+        @Override
+        public CfrAcc add(CicdEvent e, CfrAcc acc) {
+            acc.total++;
+            if ("DEPLOY_FAILED".equals(e.getEventType()) || e.isFailure()) acc.failed++;
+            acc.serviceName = e.getServiceName();
+            return acc;
+        }
+
+        @Override public CfrAcc getResult(CfrAcc acc) { return acc; }
+
+        @Override
+        public CfrAcc merge(CfrAcc a, CfrAcc b) {
+            a.total  += b.total;
+            a.failed += b.failed;
+            return a;
+        }
+    }
+
+    static class CfrWindowFn
+            extends ProcessWindowFunction<CfrAcc, MetricResult, String, TimeWindow> {
+        @Override
+        public void process(String pipelineId, Context ctx,
+                            Iterable<CfrAcc> elems, Collector<MetricResult> out) {
+            CfrAcc acc = elems.iterator().next();
+            double cfr = acc.total == 0 ? 0 : (acc.failed * 100.0 / acc.total);
+            out.collect(new MetricResult(
+                    MetricResult.MetricType.CHANGE_FAILURE_RATE,
+                    pipelineId, acc.serviceName,
+                    ctx.window().getStart(), ctx.window().getEnd(), cfr, acc.total));
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // #4 — Mean Time to Recovery (MTTR)
+    // ══════════════════════════════════════════════════════════════════
+
+    public static DataStream<MetricResult> mttr(DataStream<CicdEvent> events) {
+        return events
+                .filter(e -> "BUILD_FAILED".equals(e.getEventType())
+                          || "BUILD_SUCCESS".equals(e.getEventType()))
+                .keyBy(CicdEvent::getPipelineId)
+                .process(new MttrProcessFn());
+    }
+
+    static class MttrProcessFn
+            extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
+
+        /** Flink ValueState — stores the timestamp of the last BUILD_FAILED event. */
+        private transient ValueState<Long> failureStartMs;
+
+        @Override
+        public void open(Configuration cfg) {
+            failureStartMs = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("failure-start-ms", Types.LONG));
+        }
+
+        @Override
+        public void processElement(CicdEvent e, Context ctx,
+                                   Collector<MetricResult> out) throws Exception {
+            if ("BUILD_FAILED".equals(e.getEventType())) {
+                // Record when the failure started
+                failureStartMs.update(e.getTimestampMs());
+
+            } else if ("BUILD_SUCCESS".equals(e.getEventType())) {
+                Long startMs = failureStartMs.value();
+                if (startMs != null) {
+                    double mttrMins = (e.getTimestampMs() - startMs) / 60_000.0;
+                    failureStartMs.clear();
+
+                    out.collect(new MetricResult(
+                            MetricResult.MetricType.MEAN_TIME_TO_RECOVERY,
+                            e.getPipelineId(), e.getServiceName(),
+                            startMs, e.getTimestampMs(), mttrMins, 1));
+                }
+            }
+        }
+
+        @Override
+        public void onTimer(long ts, OnTimerContext ctx,
+                            Collector<MetricResult> out) {}
+    }
+}

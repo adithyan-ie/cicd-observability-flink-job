@@ -1,0 +1,39 @@
+---
+# ── Namespace ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cicd-observability
+  labels:
+    app.kubernetes.io/managed-by: kubectl
+    project: cicd-observability-flink
+
+---
+# ── ConfigMap: Flink job configuration ───────────────────────────────────────
+# Environment-specific values (broker address, topic names, parallelism)
+# are injected here so the Docker image stays environment-agnostic.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-job-config
+  namespace: cicd-observability
+data:
+  # Kafka
+  KAFKA_BOOTSTRAP:      "kafka:29092"
+  KAFKA_TOPIC_INPUT:    "cicd-events"
+  KAFKA_TOPIC_METRICS:  "pipeline-metrics"
+  KAFKA_TOPIC_HEALTH:   "pipeline-health"
+  KAFKA_TOPIC_ALERTS:   "failure-pattern-alerts"
+  KAFKA_TOPIC_TIMEOUTS: "pattern-timeouts"
+  KAFKA_TOPIC_LATE:     "late-events"
+  KAFKA_CONSUMER_GROUP: "flink-cicd-analytics"
+
+  # Flink
+  FLINK_PARALLELISM:    "2"
+
+  # Watermark
+  WATERMARK_DELAY_SECONDS: "30"
+  LATE_CANDIDATE_THRESHOLD_SECONDS: "30"
+
+  # CEP
+  CEP_PATTERN_WINDOW_MINUTES: "10"

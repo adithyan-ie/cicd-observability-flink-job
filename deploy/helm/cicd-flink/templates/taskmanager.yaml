@@ -1,0 +1,71 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cicd-flink.fullname" . }}-taskmanager
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "cicd-flink.labels" . | nindent 4 }}
+    component: taskmanager
+spec:
+  replicas: {{ .Values.flink.taskmanager.replicas }}
+  selector:
+    matchLabels: {{- include "cicd-flink.selectorLabels" . | nindent 6 }}
+      component: taskmanager
+  template:
+    metadata:
+      labels: {{- include "cicd-flink.selectorLabels" . | nindent 8 }}
+        component: taskmanager
+    spec:
+      serviceAccountName: {{ include "cicd-flink.fullname" . }}-sa
+      containers:
+        - name: taskmanager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["taskmanager"]
+          ports:
+            - { containerPort: 6122, name: rpc }
+          env:
+            - name: FLINK_COMPONENT
+              value: "taskmanager"
+            - name: JOB_MANAGER_RPC_ADDRESS
+              value: "{{ include "cicd-flink.fullname" . }}-jobmanager"
+            - name: JOB_MANAGER_RPC_PORT
+              value: "6123"
+            - name: TASK_MANAGER_NUMBER_OF_TASK_SLOTS
+              value: {{ .Values.flink.taskmanager.slotsPerTask | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "cicd-flink.fullname" . }}-config
+          resources: {{- toYaml .Values.flink.taskmanager.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket: { port: 6122 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - { name: flink-state, mountPath: /tmp/flink-checkpoints }
+      volumes:
+        - name: flink-state
+          emptyDir: {}
+
+---
+{{- if .Values.flink.taskmanager.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "cicd-flink.fullname" . }}-taskmanager-hpa
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind:       Deployment
+    name:       {{ include "cicd-flink.fullname" . }}-taskmanager
+  minReplicas: {{ .Values.flink.taskmanager.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.flink.taskmanager.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type:               Utilization
+          averageUtilization: {{ .Values.flink.taskmanager.autoscaling.cpuTarget }}
+{{- end }}

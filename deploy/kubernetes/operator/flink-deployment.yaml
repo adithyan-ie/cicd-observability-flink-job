@@ -1,0 +1,166 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Flink Kubernetes Operator — Installation + FlinkDeployment CRD
+#
+# The Flink Kubernetes Operator manages Flink jobs as Kubernetes custom resources.
+# It watches FlinkDeployment objects and automatically:
+#   - Creates JobManager Deployment + Service
+#   - Creates TaskManager Deployment
+#   - Handles job submission (Application Mode — no separate submit step)
+#   - Manages savepoints, upgrades, and failure recovery
+#
+# To install the operator (run once per cluster):
+#   helm repo add flink-operator-repo https://downloads.apache.org/flink/flink-kubernetes-operator-1.8.0/
+#   helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
+#       --namespace flink-operator --create-namespace
+# ═══════════════════════════════════════════════════════════════════════════════
+
+---
+# ── Namespace ─────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cicd-observability
+
+---
+# ── ConfigMap — environment config injected into both JM and TM pods ─────────
+# The Flink Kubernetes Operator injects this into the pod spec via podTemplate.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cicd-flink-config
+  namespace: cicd-observability
+data:
+  KAFKA_BOOTSTRAP:      "kafka:29092"
+  KAFKA_TOPIC_INPUT:    "cicd-events"
+  KAFKA_TOPIC_METRICS:  "pipeline-metrics"
+  KAFKA_TOPIC_HEALTH:   "pipeline-health"
+  KAFKA_TOPIC_ALERTS:   "failure-pattern-alerts"
+  KAFKA_TOPIC_TIMEOUTS: "pattern-timeouts"
+  KAFKA_TOPIC_LATE:     "late-events"
+  PG_URL:               "jdbc:postgresql://postgres:5432/cicd_metrics"
+  PG_USER:              "flink"
+  GRAFANA_URL:          "http://grafana:3000"
+  FLINK_PARALLELISM:    "4"
+
+---
+# ── Secret — passwords (not in ConfigMap) ─────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cicd-flink-secrets
+  namespace: cicd-observability
+type: Opaque
+stringData:
+  PG_PASSWORD:      "flink_secret"
+  GRAFANA_API_KEY:  "your-grafana-api-key"
+
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# FlinkDeployment — the core CRD managed by the Flink Kubernetes Operator
+#
+# This single resource definition causes the operator to:
+#   1. Create a JobManager Deployment running in Application Mode
+#      → auto-submits PipelineObservabilityJob from the JAR in /opt/flink/usrlib/
+#   2. Create TaskManager Deployment with the specified replica count
+#   3. Wire JobManager ↔ TaskManager RPC (flink-jm service → port 6123)
+#   4. Manage the full lifecycle: upgrade, savepoint, restart on failure
+#
+# Application Mode (recommended for production):
+#   - Job runs INSIDE the JobManager JVM — no external submission
+#   - Job isolation: each FlinkDeployment is a separate Flink cluster
+#   - Automatic cleanup when job finishes (for batch; streaming runs forever)
+# ══════════════════════════════════════════════════════════════════════════════
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: cicd-flink-analytics
+  namespace: cicd-observability
+spec:
+  # ── Image: the SAME image is used for JobManager AND TaskManager ────────────
+  # The operator sets the startup command (standalone-job vs taskmanager)
+  # automatically based on the pod role — you don't specify it here.
+  image: your-registry/cicd-flink-analytics:1.0.0
+  imagePullPolicy: Always
+
+  # Flink version must match the base image
+  flinkVersion: v1_18
+
+  # ── Flink configuration ────────────────────────────────────────────────────
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "4"
+    state.backend: rocksdb
+    state.backend.incremental: "true"
+    state.checkpoints.dir: "s3://your-bucket/flink-checkpoints"   # replace with your bucket
+    state.savepoints.dir:  "s3://your-bucket/flink-savepoints"
+    execution.checkpointing.interval: "10000"
+    execution.checkpointing.mode: EXACTLY_ONCE
+    restart-strategy: fixed-delay
+    restart-strategy.fixed-delay.attempts: "5"
+    restart-strategy.fixed-delay.delay:    "10s"
+    parallelism.default: "4"
+
+  # ── Service account (with RBAC to manage pods) ────────────────────────────
+  serviceAccount: flink-service-account
+
+  # ── JobManager spec ────────────────────────────────────────────────────────
+  jobManager:
+    resource:
+      memory: "1600m"
+      cpu: 0.5
+    replicas: 1   # Always 1 — JobManager HA requires ZooKeeper (optional)
+    podTemplate:
+      spec:
+        containers:
+          - name: flink-main-container
+            envFrom:
+              - configMapRef:
+                  name: cicd-flink-config
+              - secretRef:
+                  name: cicd-flink-secrets
+
+  # ── TaskManager spec ───────────────────────────────────────────────────────
+  taskManager:
+    resource:
+      memory: "2048m"
+      cpu: 1.0
+    replicas: 2   # Scale this for higher throughput
+    podTemplate:
+      spec:
+        containers:
+          - name: flink-main-container
+            envFrom:
+              - configMapRef:
+                  name: cicd-flink-config
+              - secretRef:
+                  name: cicd-flink-secrets
+            volumeMounts:
+              - name: rocksdb-state
+                mountPath: /tmp/rocksdb
+        volumes:
+          - name: rocksdb-state
+            emptyDir: {}   # Replace with PVC in production
+
+  # ── Job definition ─────────────────────────────────────────────────────────
+  # This tells the operator WHICH job to run from the JAR.
+  # Application Mode: the JAR is already in /opt/flink/usrlib/ inside the image.
+  job:
+    jarURI: local:///opt/flink/usrlib/cicd-flink-analytics.jar
+    entryClass: com.cicd.observability.jobs.PipelineObservabilityJob
+    parallelism: 4
+    upgradeMode: savepoint   # Take savepoint before upgrading (zero data loss)
+    state: running            # Desired state — operator ensures this is maintained
+
+  # ── Pod template for all pods (shared settings) ────────────────────────────
+  podTemplate:
+    spec:
+      serviceAccountName: flink-service-account
+      containers:
+        - name: flink-main-container
+          # Resource limits enforced on both JM and TM (overridden per role above)
+          resources:
+            requests:
+              memory: "1600Mi"
+              cpu:    "500m"
+            limits:
+              memory: "2048Mi"
+              cpu:    "2000m"

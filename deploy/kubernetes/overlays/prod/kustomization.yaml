@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+bases:
+  - ../../base
+
+images:
+  - name:    your-registry/cicd-flink-analytics
+    newTag:  1.0.0   # pin to a specific release tag in production
+
+patches:
+  # Scale TaskManagers to 3 replicas in production
+  - target:
+      kind: Deployment
+      name: flink-taskmanager
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1000m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2000m"
+      # Use PVC for checkpoint state in production (not emptyDir)
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value:
+          name: flink-state
+          persistentVolumeClaim:
+            claimName: flink-state-pvc
+
+configMapGenerator:
+  - name: flink-job-config
+    behavior: merge
+    literals:
+      - KAFKA_BOOTSTRAP=kafka-cluster.kafka.svc.cluster.local:9092
+      - FLINK_PARALLELISM=4
+      - WATERMARK_DELAY_SECONDS=30

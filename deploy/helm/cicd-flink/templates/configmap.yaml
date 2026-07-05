@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cicd-flink.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "cicd-flink.labels" . | nindent 4 }}
+data:
+  KAFKA_BOOTSTRAP:                      {{ .Values.kafka.bootstrap | quote }}
+  KAFKA_TOPIC_INPUT:                    {{ .Values.kafka.topics.input | quote }}
+  KAFKA_TOPIC_METRICS:                  {{ .Values.kafka.topics.metrics | quote }}
+  KAFKA_TOPIC_HEALTH:                   {{ .Values.kafka.topics.health | quote }}
+  KAFKA_TOPIC_ALERTS:                   {{ .Values.kafka.topics.alerts | quote }}
+  KAFKA_TOPIC_TIMEOUTS:                 {{ .Values.kafka.topics.timeouts | quote }}
+  KAFKA_TOPIC_LATE:                     {{ .Values.kafka.topics.late | quote }}
+  KAFKA_CONSUMER_GROUP:                 {{ .Values.kafka.consumerGroup | quote }}
+  FLINK_PARALLELISM:                    {{ .Values.flink.parallelism | quote }}
+  WATERMARK_DELAY_SECONDS:              {{ .Values.watermark.delaySeconds | quote }}
+  LATE_CANDIDATE_THRESHOLD_SECONDS:     {{ .Values.cep.lateCandidateThresholdSeconds | quote }}
+  CEP_PATTERN_WINDOW_MINUTES:           {{ .Values.cep.patternWindowMinutes | quote }}

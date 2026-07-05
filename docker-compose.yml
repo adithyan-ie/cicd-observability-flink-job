@@ -1,0 +1,264 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI/CD Observability — Full Docker Compose Stack
+#
+# Services:
+#   kafka         — KRaft broker (no Zookeeper)
+#   kafka-ui      — Kafka dashboard at http://localhost:8081
+#   kcat          — Kafka CLI for Jenkins pipeline events
+#   postgres      — Metric storage (read by Grafana)
+#   grafana       — Dashboards + annotations at http://localhost:3000
+#   flink-jm      — Flink JobManager (Application Mode — runs your job)
+#   flink-tm-1    — Flink TaskManager 1 (executes operator tasks)
+#   flink-tm-2    — Flink TaskManager 2 (executes operator tasks)
+#
+# How it works:
+#   flink-jm starts with args: ["standalone-job"]
+#     → loads cicd-flink-analytics.jar from /opt/flink/usrlib/
+#     → calls PipelineObservabilityJob.main()
+#     → builds the streaming DAG (EventRouter + 4 use cases)
+#     → distributes tasks to flink-tm-1 and flink-tm-2
+#
+#   flink-tm-* starts with args: ["taskmanager"]
+#     → registers with JobManager on flink-jm:6123
+#     → receives assigned operator tasks (EventRouter, DORA, Health, CEP, Late)
+#     → each slot runs only the events routed to it by the EventRouter
+#
+#   SAME IMAGE — different role set by the args field.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+x-flink-env: &flink-env
+  # Kafka
+  KAFKA_BOOTSTRAP:        kafka:29092
+  KAFKA_TOPIC_INPUT:      cicd-events
+  KAFKA_TOPIC_METRICS:    pipeline-metrics
+  KAFKA_TOPIC_HEALTH:     pipeline-health
+  KAFKA_TOPIC_ALERTS:     failure-pattern-alerts
+  KAFKA_TOPIC_TIMEOUTS:   pattern-timeouts
+  KAFKA_TOPIC_LATE:       late-events
+  # Postgres
+  PG_URL:      jdbc:postgresql://postgres:5432/cicd_metrics
+  PG_USER:     flink
+  PG_PASSWORD: flink_secret
+  # Grafana
+  GRAFANA_URL:     http://grafana:3000
+  GRAFANA_API_KEY: changeme
+  # Flink
+  FLINK_PARALLELISM: "2"
+  JOB_MANAGER_RPC_ADDRESS: flink-jm
+
+services:
+
+  # ── Kafka (KRaft mode) ─────────────────────────────────────────────────────
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"    # host access (Jenkins pipeline)
+      - "29092:29092"  # Docker-internal access (Flink, kafka-ui, kcat)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - cicd-net
+
+  # ── Kafka UI ───────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8080"    # http://localhost:8081
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-kraft
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      AUTH_TYPE: "DISABLED"
+    networks:
+      - cicd-net
+
+  # ── kcat — Kafka CLI (used by Jenkins to push events) ─────────────────────
+  kcat:
+    image: confluentinc/cp-kcat:latest
+    container_name: kcat
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      KCAT_BROKERS: kafka:29092
+    networks:
+      - cicd-net
+
+  # ── PostgreSQL — metric storage ────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB:       cicd_metrics
+      POSTGRES_USER:     flink
+      POSTGRES_PASSWORD: flink_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Run init.sql automatically on first start
+      - ./src/main/resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flink -d cicd_metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cicd-net
+
+  # ── Grafana — dashboards ───────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"    # http://localhost:3000  (admin / admin)
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED:  "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Auto-provision Postgres as a data source
+      - ./docker/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/postgres.yaml:ro
+    networks:
+      - cicd-net
+
+  # ── Flink JobManager ───────────────────────────────────────────────────────
+  # Role: "standalone-job"
+  #   - Loads cicd-flink-analytics.jar from /opt/flink/usrlib/
+  #   - Calls PipelineObservabilityJob.main()
+  #   - Builds the full streaming DAG (EventRouter → 4 use cases)
+  #   - Schedules operator tasks across TaskManager slots
+  #   - Manages checkpoints to /tmp/flink-checkpoints
+  flink-jm:
+    image: cicd-flink-analytics:latest   # built from Dockerfile in this repo
+    container_name: flink-jm
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["standalone-job",
+              "--job-classname", "com.cicd.observability.jobs.PipelineObservabilityJob"]
+    ports:
+      - "8082:8081"    # Flink Web UI → http://localhost:8082
+    environment:
+      <<: *flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        parallelism.default: 2
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - cicd-net
+
+  # ── Flink TaskManager 1 ────────────────────────────────────────────────────
+  # Role: "taskmanager"
+  #   - Registers with JobManager at flink-jm:6123
+  #   - Provides 4 task slots (numberOfTaskSlots: 4)
+  #   - Executes operator tasks assigned by the JobManager:
+  #       * EventRouter (classifies every event — runs on ALL events)
+  #       * DORA operators (runs on DORA_TAG events only)
+  #       * PipelineHealthOperator (runs on HEALTH_TAG events only)
+  #   - Maintains RocksDB state for MapState/ValueState operators
+  flink-tm-1:
+    image: cicd-flink-analytics:latest
+    container_name: flink-tm-1
+    restart: unless-stopped
+    depends_on:
+      flink-jm:
+        condition: service_healthy
+    command: ["taskmanager"]
+    environment:
+      <<: *flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-rocksdb-1:/tmp/rocksdb
+    networks:
+      - cicd-net
+
+  # ── Flink TaskManager 2 ────────────────────────────────────────────────────
+  # Role: "taskmanager"
+  #   - Same as flink-tm-1, provides additional slots
+  #   - Flink automatically distributes operator tasks across both TMs
+  #   - Executes:
+  #       * LateEventOperator (runs on LATE_TAG events only)
+  #       * FailurePatternOperator/CEP (runs on CEP_TAG events only)
+  #   - RocksDB on separate volume to avoid I/O contention
+  flink-tm-2:
+    image: cicd-flink-analytics:latest
+    container_name: flink-tm-2
+    restart: unless-stopped
+    depends_on:
+      flink-jm:
+        condition: service_healthy
+    command: ["taskmanager"]
+    environment:
+      <<: *flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-rocksdb-2:/tmp/rocksdb
+    networks:
+      - cicd-net
+
+networks:
+  cicd-net:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
+  grafana-data:
+  flink-checkpoints:    # shared between JM and both TMs for checkpoint access
+  flink-rocksdb-1:      # RocksDB state for TaskManager 1
+  flink-rocksdb-2:      # RocksDB state for TaskManager 2

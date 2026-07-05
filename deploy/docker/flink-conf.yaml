@@ -1,0 +1,49 @@
+# ── Flink configuration — baked into the Docker image ────────────────────────
+# All values here are DEFAULTS.  Override per-deployment via:
+#   Docker:     environment: section in docker-compose.yml
+#   Kubernetes: ConfigMap / env: section in pod spec
+
+# JobManager address — TaskManagers register here
+# In Docker:     resolved by Docker DNS (service name)
+# In Kubernetes: resolved by K8s DNS (service name)
+jobmanager.rpc.address: flink-jobmanager
+jobmanager.rpc.port:    6123
+jobmanager.memory.process.size: 1600m
+
+# TaskManager
+taskmanager.memory.process.size: 2048m
+taskmanager.numberOfTaskSlots: 4
+
+# Parallelism default — override via FLINK_PARALLELISM env var
+parallelism.default: 2
+
+# ── RocksDB state backend (also set programmatically in FlinkConfig.java) ─────
+# Declarative config here acts as a fallback / documentation.
+# The programmatic call in FlinkConfig.java takes precedence.
+state.backend: rocksdb
+state.backend.rocksdb.localdir: /tmp/rocksdb
+state.backend.incremental: true
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+execution.checkpointing.interval: 10000
+execution.checkpointing.mode: EXACTLY_ONCE
+execution.checkpointing.min-pause: 5000
+execution.checkpointing.timeout: 60000
+state.checkpoints.dir: file:///tmp/flink-checkpoints
+state.savepoints.dir:  file:///tmp/flink-savepoints
+
+# ── Restart strategy ──────────────────────────────────────────────────────────
+restart-strategy: fixed-delay
+restart-strategy.fixed-delay.attempts: 5
+restart-strategy.fixed-delay.delay:    10s
+
+# ── Web UI ────────────────────────────────────────────────────────────────────
+rest.port: 8081
+rest.address: 0.0.0.0
+web.submit.enable: false
+
+# ── Metrics (Prometheus scraping) ─────────────────────────────────────────────
+metrics.reporter.promgateway.class: org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporter
+metrics.reporter.promgateway.host: prometheus-pushgateway
+metrics.reporter.promgateway.port: 9091
+metrics.reporter.promgateway.jobName: cicd-flink-analytics

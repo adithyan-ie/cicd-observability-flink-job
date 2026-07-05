@@ -1,0 +1,165 @@
+---
+# ── ServiceAccount ────────────────────────────────────────────────────────────
+# Flink needs to create/delete its own pods (TaskManagers) in native K8s mode.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-service-account
+  namespace: cicd-observability
+
+---
+# ── RBAC: allow JobManager to manage TaskManager pods ─────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flink-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps"]
+    verbs:     ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs:     ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flink-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind:     ClusterRole
+  name:     flink-role
+subjects:
+  - kind:      ServiceAccount
+    name:      flink-service-account
+    namespace: cicd-observability
+
+---
+# ── JobManager Deployment ─────────────────────────────────────────────────────
+# The JobManager:
+#   1. Accepts the submitted job JAR (baked into /opt/flink/usrlib/)
+#   2. Builds the Flink streaming graph (all 4 use cases from EventRouter)
+#   3. Schedules tasks across TaskManagers
+#   4. Manages checkpoints and recovery
+#
+# In Application Mode (recommended for production):
+#   The job runs directly inside the JobManager process — no separate
+#   submission step needed.  The JAR in /opt/flink/usrlib/ is auto-executed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: cicd-observability
+  labels:
+    app:       cicd-flink
+    component: jobmanager
+spec:
+  replicas: 1   # JobManager is always 1 replica (HA via ZooKeeper if needed)
+  selector:
+    matchLabels:
+      app:       cicd-flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app:       cicd-flink
+        component: jobmanager
+    spec:
+      serviceAccountName: flink-service-account
+      containers:
+        - name: jobmanager
+          image: your-registry/cicd-flink-analytics:latest  # ← replace with your image
+          imagePullPolicy: Always
+          args: ["standalone-job"]   # Application Mode — auto-submits the job JAR
+
+          ports:
+            - containerPort: 6123   # RPC
+              name: rpc
+            - containerPort: 6124   # Blob server
+              name: blob
+            - containerPort: 8081   # REST / Web UI
+              name: webui
+
+          env:
+            # Tell Flink this is the JobManager
+            - name: FLINK_COMPONENT
+              value: "jobmanager"
+            # Main class to run (our single entry point for all 4 use cases)
+            - name: FLINK_JOB_CLASS
+              value: "com.cicd.observability.jobs.PipelineObservabilityJob"
+
+          # Inject all Kafka/Flink config from ConfigMap as env vars
+          envFrom:
+            - configMapRef:
+                name: flink-job-config
+
+          resources:
+            requests:
+              memory: "1600Mi"
+              cpu:    "500m"
+            limits:
+              memory: "1600Mi"
+              cpu:    "1000m"
+
+          livenessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds:       15
+            failureThreshold:    5
+
+          readinessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds:       10
+
+---
+# ── JobManager Service ────────────────────────────────────────────────────────
+# ClusterIP for TaskManagers to reach the JobManager (RPC + blob).
+# NodePort/LoadBalancer exposes the Web UI for monitoring.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: cicd-observability
+  labels:
+    app:       cicd-flink
+    component: jobmanager
+spec:
+  type: ClusterIP
+  selector:
+    app:       cicd-flink
+    component: jobmanager
+  ports:
+    - name: rpc
+      port: 6123
+      targetPort: 6123
+    - name: blob
+      port: 6124
+      targetPort: 6124
+    - name: webui
+      port: 8081
+      targetPort: 8081
+
+---
+# ── JobManager Web UI — NodePort for external access ─────────────────────────
+# Access Flink UI at http://<node-ip>:30081
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager-webui
+  namespace: cicd-observability
+spec:
+  type: NodePort
+  selector:
+    app:       cicd-flink
+    component: jobmanager
+  ports:
+    - name:       webui
+      port:       8081
+      targetPort: 8081
+      nodePort:   30081
