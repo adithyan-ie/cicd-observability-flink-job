@@ -128,7 +128,7 @@ public class DoraOperatorsTest {
     @Test
     public void testLeadTime_computedCorrectly() throws Exception {
         base = LocalDateTime.now();
-        var deployTime     = base.plusMinutes(90); // 90 minutes later
+        var deployTime     = base.plusMinutes(20); // 20 minutes later
 
         CicdEvent build = event("pipe-3", "svc-c", "BUILD_STARTED", "SUCCESS", base);
         build.setCommitSha("abc123");
@@ -148,7 +148,7 @@ public class DoraOperatorsTest {
         MetricResult r = results.get(0);
         assertEquals(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES, r.getMetricType());
         // 90 minutes lead time
-        assertEquals(90.0, r.getValue(), 1.0);  // ±1 minute tolerance
+        assertEquals(20.0, r.getValue(), 1.0);  // ±1 minute tolerance
     }
 
     @Test

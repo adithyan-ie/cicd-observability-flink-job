@@ -34,7 +34,6 @@ public class MetricResult implements Serializable {
     private long       sampleCount;
     private String     detail;            // JSON blob for complex results
     private long       computedAtMs;
-    private double        deploysPerDayRate;
 
     public MetricResult() {
         this.computedAtMs = System.currentTimeMillis();
@@ -110,6 +109,7 @@ public class MetricResult implements Serializable {
     public String toString() {
         return "MetricResult{type=" + metricType + ", pipeline=" + pipelineId + ", window_start=" + windowStartMs
                 +", window_end=" + windowEndMs
+                +", service_name=" + serviceName
                 + ", value=" + value + ", band=" + performanceBand + "}";
     }
 }

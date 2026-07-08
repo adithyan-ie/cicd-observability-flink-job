@@ -61,15 +61,15 @@ public class DoraOperators {
          * Java Map in memory, so it survives job restarts automatically.
          */
         private transient MapState<String, Long> buildStartTimes;
-        private transient ValueState<List<Double>> leadTimeSamples;
+      //  private transient ValueState<List<Double>> leadTimeSamples;
 
         @Override
         public void open(Configuration cfg) {
             buildStartTimes = getRuntimeContext().getMapState(
                     new MapStateDescriptor<>("build-start-times", Types.STRING, Types.LONG));
-            leadTimeSamples = getRuntimeContext().getState(
-                    new ValueStateDescriptor<>("lead-time-samples",
-                            Types.LIST(Types.DOUBLE)));
+//            leadTimeSamples = getRuntimeContext().getState(
+//                    new ValueStateDescriptor<>("lead-time-samples",
+//                            Types.LIST(Types.DOUBLE)));
         }
 
         @Override
@@ -84,20 +84,20 @@ public class DoraOperators {
                 Long startMs = buildStartTimes.get(e.getCommitSha());
                 if (startMs != null) {
                     double leadMins = (e.getTimestampMs() - startMs) / 60_000.0;
-                    List<Double> samples = leadTimeSamples.value();
-                    if (samples == null) samples = new ArrayList<>();
-                    samples.add(leadMins);
-                    leadTimeSamples.update(samples);
+//                    List<Double> samples = leadTimeSamples.value();
+//                    if (samples == null) samples = new ArrayList<>();
+//                    samples.add(leadMins);
+//                    leadTimeSamples.update(samples);
                     buildStartTimes.remove(e.getCommitSha());
 
                     // Emit a rolling sample for Grafana dashboards
-                    MetricResult r = new MetricResult(
+                    MetricResult leadTimeMetric = new MetricResult(
                             MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
                             e.getPipelineId(), e.getServiceName(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
                             leadMins, 1);
-                    out.collect(r);
+                    out.collect(leadTimeMetric);
                 }
             }
         }
