@@ -124,16 +124,16 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
     private void postAnnotation(MetricResult metric) {
         try {
             Map<String, Object> annotation = new HashMap<>();
-            annotation.put("time",    metric.getWindowEndMs() > 0
-                    ? metric.getWindowEndMs() : metric.getComputedAtMs());
+//            annotation.put("time",    metric.getWindowEndMs() > 0
+//                    ? metric.getWindowEndMs() : metric.getComputedAtMs());
             annotation.put("tags",    buildTags(metric));
             annotation.put("text",    buildText(metric));
 
             // For range annotations (e.g. MTTR duration)
-            if (metric.getWindowStartMs() > 0 && metric.getWindowEndMs() > 0
-                    && metric.getWindowEndMs() > metric.getWindowStartMs()) {
-                annotation.put("timeEnd", metric.getWindowEndMs());
-            }
+//            if (metric.getWindowStartMs() > 0 && metric.getWindowEndMs() > 0
+//                    && metric.getWindowEndMs() > metric.getWindowStartMs()) {
+//                annotation.put("timeEnd", metric.getWindowEndMs());
+//            }
 
             String body = mapper.writeValueAsString(annotation);
 

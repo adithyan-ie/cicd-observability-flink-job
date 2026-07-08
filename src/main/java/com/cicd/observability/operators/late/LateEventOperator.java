@@ -12,6 +12,10 @@ import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
 /**
  * Late Event Processing
  *
@@ -111,7 +115,8 @@ public class LateEventOperator {
             MetricResult r = new MetricResult(
                     MetricResult.MetricType.LATE_EVENT_CORRECTED,
                     pipelineId, acc.serviceName,
-                    ctx.window().getStart(), ctx.window().getEnd(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
                     acc.total, acc.total);
             r.setDetail("{\"failures\":" + acc.failures + ",\"total\":" + acc.total + "}");
             out.collect(r);

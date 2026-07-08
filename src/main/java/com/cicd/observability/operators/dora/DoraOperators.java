@@ -17,6 +17,9 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -91,7 +94,9 @@ public class DoraOperators {
                     MetricResult r = new MetricResult(
                             MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
                             e.getPipelineId(), e.getServiceName(),
-                            startMs, e.getTimestampMs(), leadMins, 1);
+                            LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
+                            LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
+                            leadMins, 1);
                     out.collect(r);
                 }
             }
@@ -155,7 +160,8 @@ public class DoraOperators {
             out.collect(new MetricResult(
                     MetricResult.MetricType.CHANGE_FAILURE_RATE,
                     pipelineId, acc.serviceName,
-                    ctx.window().getStart(), ctx.window().getEnd(), cfr, acc.total));
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(), cfr, acc.total));
         }
     }
 
@@ -199,7 +205,9 @@ public class DoraOperators {
                     out.collect(new MetricResult(
                             MetricResult.MetricType.MEAN_TIME_TO_RECOVERY,
                             e.getPipelineId(), e.getServiceName(),
-                            startMs, e.getTimestampMs(), mttrMins, 1));
+                            LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
+                            LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
+                            mttrMins, 1));
                 }
             }
         }

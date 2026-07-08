@@ -204,7 +204,7 @@ public class FailurePatternOperator {
             Map<String, String> m = new HashMap<>();
             m.put("step",  step);
             m.put("event", e.getEventType());
-            m.put("ts",    e.getEventTimestamp());
+            m.put("ts",    e.getEventTimestamp().toString());
             return m;
         }
     }

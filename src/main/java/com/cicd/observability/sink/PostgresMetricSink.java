@@ -96,8 +96,8 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
                     ? metric.getMetricType().name() : "UNKNOWN");
             statement.setString(2,  nullSafe(metric.getPipelineId()));
             statement.setString(3,  nullSafe(metric.getServiceName()));
-            statement.setLong(4,    metric.getWindowStartMs());
-            statement.setLong(5,    metric.getWindowEndMs());
+//            statement.setLong(4,    metric.getWindowStartMs());
+//            statement.setLong(5,    metric.getWindowEndMs());
             statement.setDouble(6,  metric.getValue());
             statement.setString(7,  nullSafe(metric.getPerformanceBand()));
             statement.setLong(8,    metric.getSampleCount());

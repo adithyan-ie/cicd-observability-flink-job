@@ -10,6 +10,10 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
 /**
  * Pipeline Health Score
  *
@@ -120,7 +124,8 @@ public class PipelineHealthOperator {
             MetricResult r = new MetricResult(
                     MetricResult.MetricType.PIPELINE_HEALTH_SCORE,
                     pipelineId, acc.serviceName,
-                    ctx.window().getStart(), ctx.window().getEnd(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
                     score, totalEvents);
 
             // Attach breakdown as detail JSON for Grafana

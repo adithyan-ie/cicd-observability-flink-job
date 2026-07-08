@@ -27,8 +27,8 @@ public class MetricResult implements Serializable {
     private MetricType metricType;
     private String     pipelineId;
     private String     serviceName;
-    private long       windowStartMs;
-    private long       windowEndMs;
+    private String       windowStartMs;
+    private String       windowEndMs;
     private double     value;
     private String     performanceBand;   // Elite / High / Medium / Low
     private long       sampleCount;
@@ -40,7 +40,7 @@ public class MetricResult implements Serializable {
     }
 
     public MetricResult(MetricType type, String pipelineId, String serviceName,
-                        long windowStart, long windowEnd, double value, long samples) {
+                        String windowStart, String windowEnd, double value, long samples) {
         this();
         this.metricType   = type;
         this.pipelineId   = pipelineId;
@@ -90,10 +90,10 @@ public class MetricResult implements Serializable {
     public void    setPipelineId(String v)        { this.pipelineId = v; }
     public String  getServiceName()              { return serviceName; }
     public void    setServiceName(String v)       { this.serviceName = v; }
-    public long    getWindowStartMs()            { return windowStartMs; }
-    public void    setWindowStartMs(long v)      { this.windowStartMs = v; }
-    public long    getWindowEndMs()              { return windowEndMs; }
-    public void    setWindowEndMs(long v)        { this.windowEndMs = v; }
+    public String    getWindowStartMs()            { return windowStartMs; }
+    public void    setWindowStartMs(String v)      { this.windowStartMs = v; }
+    public String    getWindowEndMs()              { return windowEndMs; }
+    public void    setWindowEndMs(String v)        { this.windowEndMs = v; }
     public double  getValue()                    { return value; }
     public void    setValue(double v)            { this.value = v; }
     public String  getPerformanceBand()          { return performanceBand; }
@@ -107,7 +107,8 @@ public class MetricResult implements Serializable {
 
     @Override
     public String toString() {
-        return "MetricResult{type=" + metricType + ", pipeline=" + pipelineId
+        return "MetricResult{type=" + metricType + ", pipeline=" + pipelineId + ", window_start=" + windowStartMs
+                +", window_end=" + windowEndMs
                 + ", value=" + value + ", band=" + performanceBand + "}";
     }
 }

@@ -10,6 +10,11 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+
 /**
  * DORA Metric #1 — Deployment Frequency
  *
@@ -29,6 +34,12 @@ public class DeploymentFrequencyOperator {
 
         return events
                 .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType()))
+                .map(e -> {
+                            System.out.println(e.getEventType());
+                            System.out.println("event time:"+ e.getEventTimestamp());
+
+
+                            return e;})
                 .keyBy(CicdEvent::getPipelineId)
                 .window(TumblingEventTimeWindows.of(windowSize))
                 .aggregate(new DeployCountAgg(), new DeployFreqWindowFn(windowDays));
@@ -36,7 +47,7 @@ public class DeploymentFrequencyOperator {
 
     // ── Accumulator ────────────────────────────────────────────────────
 
-    static class DeployCount {
+    public static class DeployCount {
         long count = 0;
         String serviceName = "";
     }
@@ -78,11 +89,19 @@ public class DeploymentFrequencyOperator {
             DeployCount acc = elements.iterator().next();
             double deploysPerDay = acc.count / windowDays;
 
+            System.out.println(
+                    "Window: " +
+                            Instant.ofEpochMilli(ctx.window().getStart()) +
+                            " -> " +
+                            Instant.ofEpochMilli(ctx.window().getEnd()) +
+                            " count=" + acc.count
+            );
             MetricResult r = new MetricResult(
                     MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
                     pipelineId, acc.serviceName,
-                    ctx.window().getStart(), ctx.window().getEnd(),
-                    deploysPerDay, acc.count);
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
+                    acc.count, acc.count);
             out.collect(r);
         }
     }

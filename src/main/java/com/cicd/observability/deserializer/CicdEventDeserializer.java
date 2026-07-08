@@ -60,8 +60,7 @@ public class CicdEventDeserializer implements DeserializationSchema<CicdEvent> {
             // Parse ISO-8601 timestamp → epoch milliseconds for Flink watermark
             if (event.getEventTimestamp() != null && !event.getEventTimestamp().isEmpty()) {
                 try {
-                    LocalDateTime ldt = LocalDateTime.parse(event.getEventTimestamp(), TS_FMT);
-                    event.setTimestampMs(ldt.toInstant(ZoneOffset.UTC).toEpochMilli());
+                    event.setTimestampMs(LocalDateTime.parse(event.getEventTimestamp()).toInstant(ZoneOffset.UTC).toEpochMilli());
                 } catch (Exception e) {
                     // Fall back to processing time
                     event.setTimestampMs(Instant.now().toEpochMilli());

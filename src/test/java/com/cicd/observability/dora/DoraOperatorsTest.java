@@ -4,13 +4,18 @@ import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import com.cicd.observability.operators.dora.DeploymentFrequencyOperator;
 import com.cicd.observability.operators.dora.DoraOperators;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.TemporalField;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,24 +31,27 @@ public class DoraOperatorsTest {
 
     private StreamExecutionEnvironment env;
 
+    private LocalDateTime base;
+
     @Before
     public void setUp() {
         env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);  // single-threaded for deterministic test output
+        base = LocalDateTime.parse("2026-07-08T23:07:00");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
 
     private CicdEvent event(String pipelineId, String serviceName,
-                            String eventType, String status, long tsMs) {
+                            String eventType, String status, LocalDateTime eventTime) {
         CicdEvent e = new CicdEvent();
         e.setPipelineId(pipelineId);
         e.setServiceName(serviceName);
         e.setEventType(eventType);
         e.setStatus(status);
-        e.setCommitSha("sha-" + tsMs);
-        e.setTimestampMs(tsMs);
-        e.setEventTimestamp(Instant.ofEpochMilli(tsMs).toString());
+        e.setCommitSha("sha-" + eventTime);
+        e.setTimestampMs(eventTime.toInstant(ZoneOffset.UTC).toEpochMilli());
+        e.setEventTimestamp(eventTime.toString());
         return e;
     }
 
@@ -55,39 +63,46 @@ public class DoraOperatorsTest {
 
     @Test
     public void testDeploymentFrequency_countsSuccessfulDeployments() throws Exception {
-        long base = nowMs();
+
 
         List<CicdEvent> events = List.of(
                 event("pipe-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
-                event("pipe-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base + 1000),
-                event("pipe-1", "svc-a", "DEPLOY_FAILED",  "FAILURE", base + 2000),
-                event("pipe-1", "svc-a", "BUILD_STARTED",  "SUCCESS", base + 3000)
+                event("pipe-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
+                event("pipe-1", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(2)),
+                event("pipe-1", "svc-b", "DEPLOY_SUCCESS",  "SUCCESS", base.plusSeconds(3)),
+                event("pipe-1", "svc-a", "BUILD_STARTED",  "SUCCESS", base.plusSeconds(3))
         );
 
         List<MetricResult> results = new ArrayList<>();
 
-        DataStream<CicdEvent> stream = env.fromCollection(events);
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                WatermarkStrategy
+                        .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                        .withTimestampAssigner((event, ts) -> event.getTimestampMs())
+        );;
         DeploymentFrequencyOperator
-                .compute(stream, Time.days(1))
+                .compute(stream, Time.seconds(10))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
         assertFalse("Expected at least one deployment frequency metric",
                 results.isEmpty());
-
+        assertEquals("no of windows created",1, results.size());
         MetricResult r = results.get(0);
         assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY, r.getMetricType());
         assertEquals("pipe-1", r.getPipelineId());
         // 2 successful deploys in 1-day window → deploysPerDay = 2.0
         assertTrue("Deploy frequency should be > 0", r.getValue() > 0);
+        assertTrue("Expected deployment frequency is", r.getValue() == 3.0);
     }
 
     @Test
     public void testDeploymentFrequency_ignoresFailedDeployments() throws Exception {
-        long base = nowMs();
+         base = LocalDateTime.now();
         List<CicdEvent> events = List.of(
                 event("pipe-2", "svc-b", "DEPLOY_FAILED", "FAILURE", base),
-                event("pipe-2", "svc-b", "DEPLOY_FAILED", "FAILURE", base + 1000)
+                event("pipe-2", "svc-b", "DEPLOY_FAILED", "FAILURE", base.plusSeconds(2))
         );
 
         List<MetricResult> results = new ArrayList<>();
@@ -111,13 +126,13 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLeadTime_computedCorrectly() throws Exception {
-        long buildStartMs = nowMs();
-        long deployMs     = buildStartMs + (90L * 60 * 1000); // 90 minutes later
+        base = LocalDateTime.now();
+        var deployTime     = base.plusMinutes(90); // 90 minutes later
 
-        CicdEvent build = event("pipe-3", "svc-c", "BUILD_STARTED", "SUCCESS", buildStartMs);
+        CicdEvent build = event("pipe-3", "svc-c", "BUILD_STARTED", "SUCCESS", base);
         build.setCommitSha("abc123");
 
-        CicdEvent deploy = event("pipe-3", "svc-c", "DEPLOY_SUCCESS", "SUCCESS", deployMs);
+        CicdEvent deploy = event("pipe-3", "svc-c", "DEPLOY_SUCCESS", "SUCCESS", deployTime);
         deploy.setCommitSha("abc123"); // same commit — should be matched
 
         List<MetricResult> results = new ArrayList<>();
@@ -137,10 +152,9 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLeadTime_noMatchForDifferentCommitSha() throws Exception {
-        long base = nowMs();
         CicdEvent build  = event("pipe-4", "svc-d", "BUILD_STARTED",  "SUCCESS", base);
         build.setCommitSha("sha-A");
-        CicdEvent deploy = event("pipe-4", "svc-d", "DEPLOY_SUCCESS", "SUCCESS", base + 5000);
+        CicdEvent deploy = event("pipe-4", "svc-d", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(5));
         deploy.setCommitSha("sha-B"); // different commit — no match
 
         List<MetricResult> results = new ArrayList<>();
@@ -158,11 +172,10 @@ public class DoraOperatorsTest {
 
     @Test
     public void testCfr_calculatesCorrectPercentage() throws Exception {
-        long base = nowMs();
         // 1 success + 1 failure = 50% CFR
         List<CicdEvent> events = List.of(
                 event("pipe-5", "svc-e", "DEPLOY_SUCCESS", "SUCCESS", base),
-                event("pipe-5", "svc-e", "DEPLOY_FAILED",  "FAILURE", base + 1000)
+                event("pipe-5", "svc-e", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(10))
         );
 
         List<MetricResult> results = new ArrayList<>();
@@ -178,10 +191,9 @@ public class DoraOperatorsTest {
 
     @Test
     public void testCfr_zeroFailures_givesZeroPercent() throws Exception {
-        long base = nowMs();
         List<CicdEvent> events = List.of(
                 event("pipe-6", "svc-f", "DEPLOY_SUCCESS", "SUCCESS", base),
-                event("pipe-6", "svc-f", "DEPLOY_SUCCESS", "SUCCESS", base + 1000)
+                event("pipe-6", "svc-f", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(10))
         );
 
         List<MetricResult> results = new ArrayList<>();
@@ -200,11 +212,10 @@ public class DoraOperatorsTest {
 
     @Test
     public void testMttr_computedInMinutes() throws Exception {
-        long failureMs  = nowMs();
-        long recoveryMs = failureMs + (45L * 60 * 1000); // 45 minutes
+        var recoveryMs = base.plusMinutes(45); // 45 minutes
 
         List<CicdEvent> events = List.of(
-                event("pipe-7", "svc-g", "BUILD_FAILED",  "FAILURE", failureMs),
+                event("pipe-7", "svc-g", "BUILD_FAILED",  "FAILURE", base),
                 event("pipe-7", "svc-g", "BUILD_SUCCESS", "SUCCESS", recoveryMs)
         );
 
@@ -223,7 +234,7 @@ public class DoraOperatorsTest {
     @Test
     public void testMttr_noSuccessAfterFailure_emitsNoMetric() throws Exception {
         List<CicdEvent> events = List.of(
-                event("pipe-8", "svc-h", "BUILD_FAILED", "FAILURE", nowMs())
+                event("pipe-8", "svc-h", "BUILD_FAILED", "FAILURE", base)
                 // No BUILD_SUCCESS follows
         );
 
@@ -243,9 +254,9 @@ public class DoraOperatorsTest {
     @Test
     public void testPerformanceBand_deployFreq() {
         MetricResult elite  = new MetricResult(MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
-                "p", "s", 0, 0, 2.0, 2);  // 2/day = Elite
+                "p", "s", "0", "0", 2.0, 2);  // 2/day = Elite
         MetricResult low    = new MetricResult(MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
-                "p", "s", 0, 0, 0.01, 1); // < monthly = Low
+                "p", "s", "0", "0", 0.01, 1); // < monthly = Low
 
         assertEquals("Elite", elite.getPerformanceBand());
         assertEquals("Low",   low.getPerformanceBand());
@@ -254,11 +265,11 @@ public class DoraOperatorsTest {
     @Test
     public void testPerformanceBand_leadTime() {
         MetricResult elite = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", 0, 0, 30.0, 1);    // 30 min < 60 = Elite
+                "p", "s", "0", "0", 30.0, 1);    // 30 min < 60 = Elite
         MetricResult high  = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", 0, 0, 200.0, 1);   // 200 min < 1440 = High
+                "p", "s", "0", "0", 200.0, 1);   // 200 min < 1440 = High
         MetricResult low   = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", 0, 0, 20000.0, 1); // > 1 week = Low
+                "p", "s", "0", "0", 20000.0, 1); // > 1 week = Low
 
         assertEquals("Elite", elite.getPerformanceBand());
         assertEquals("High",  high.getPerformanceBand());
