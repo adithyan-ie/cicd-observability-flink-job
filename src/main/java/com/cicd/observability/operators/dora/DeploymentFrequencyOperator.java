@@ -87,7 +87,7 @@ public class DeploymentFrequencyOperator {
         public void process(String pipelineId, Context ctx,
                             Iterable<DeployCount> elements, Collector<MetricResult> out) {
             DeployCount acc = elements.iterator().next();
-            double deploysPerDay = acc.count / windowDays;
+            double deploysPerDayRate = acc.count / windowDays;
 
             System.out.println(
                     "Window: " +

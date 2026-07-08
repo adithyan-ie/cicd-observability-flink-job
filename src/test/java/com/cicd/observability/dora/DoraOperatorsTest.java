@@ -70,6 +70,7 @@ public class DoraOperatorsTest {
                 event("pipe-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
                 event("pipe-1", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(2)),
                 event("pipe-1", "svc-b", "DEPLOY_SUCCESS",  "SUCCESS", base.plusSeconds(3)),
+                event("pipe-1", "svc-b", "DEPLOY_SUCCESS",  "SUCCESS", base.plusSeconds(10)),
                 event("pipe-1", "svc-a", "BUILD_STARTED",  "SUCCESS", base.plusSeconds(3))
         );
 
@@ -88,13 +89,13 @@ public class DoraOperatorsTest {
 
         assertFalse("Expected at least one deployment frequency metric",
                 results.isEmpty());
-        assertEquals("no of windows created",1, results.size());
-        MetricResult r = results.get(0);
-        assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY, r.getMetricType());
-        assertEquals("pipe-1", r.getPipelineId());
+        assertEquals("no of windows created",2, results.size());
+        MetricResult firstWindow = results.get(0);
+        assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY, firstWindow.getMetricType());
+        assertEquals("pipe-1", firstWindow.getPipelineId());
         // 2 successful deploys in 1-day window → deploysPerDay = 2.0
-        assertTrue("Deploy frequency should be > 0", r.getValue() > 0);
-        assertTrue("Expected deployment frequency is", r.getValue() == 3.0);
+        assertTrue("Deploy frequency should be > 0", firstWindow.getValue() > 0);
+        assertTrue("Expected deployment frequency is", firstWindow.getValue() == 3.0);
     }
 
     @Test

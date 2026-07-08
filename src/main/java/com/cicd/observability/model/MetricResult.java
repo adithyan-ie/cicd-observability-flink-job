@@ -34,6 +34,7 @@ public class MetricResult implements Serializable {
     private long       sampleCount;
     private String     detail;            // JSON blob for complex results
     private long       computedAtMs;
+    private double        deploysPerDayRate;
 
     public MetricResult() {
         this.computedAtMs = System.currentTimeMillis();
