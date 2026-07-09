@@ -81,7 +81,7 @@ public class DoraOperatorsTest {
                 WatermarkStrategy
                         .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
                         .withTimestampAssigner((event, ts) -> event.getTimestampMs())
-        );;
+        );
         DeploymentFrequencyOperator
                 .compute(stream, Time.seconds(10))
                 .executeAndCollect()
@@ -176,11 +176,17 @@ public class DoraOperatorsTest {
         // 1 success + 1 failure = 50% CFR
         List<CicdEvent> events = List.of(
                 event("pipe-5", "svc-e", "DEPLOY_SUCCESS", "SUCCESS", base),
-                event("pipe-5", "svc-e", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(10))
+                event("pipe-5", "svc-e", "DEPLOY_FAILED",  "FAILURE", base.plusMinutes(5))
         );
 
         List<MetricResult> results = new ArrayList<>();
-        DoraOperators.changeFailureRate(env.fromCollection(events), Time.days(7))
+      var dataStream =   env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+        DoraOperators.changeFailureRate(dataStream, Time.days(7))
+
                      .executeAndCollect()
                      .forEachRemaining(results::add);
 
@@ -198,7 +204,12 @@ public class DoraOperatorsTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        DoraOperators.changeFailureRate(env.fromCollection(events), Time.days(7))
+        var dataStream =   env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+        DoraOperators.changeFailureRate(dataStream, Time.days(7))
                      .executeAndCollect()
                      .forEachRemaining(results::add);
 
@@ -221,7 +232,14 @@ public class DoraOperatorsTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        DoraOperators.mttr(env.fromCollection(events))
+
+        var dataStream =   env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DoraOperators.mttr(dataStream)
                      .executeAndCollect()
                      .forEachRemaining(results::add);
 
@@ -240,7 +258,12 @@ public class DoraOperatorsTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        DoraOperators.mttr(env.fromCollection(events))
+        var dataStream =   env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+        DoraOperators.mttr(dataStream)
                      .executeAndCollect()
                      .forEachRemaining(results::add);
 
