@@ -1,0 +1,196 @@
+════════════════════════════════════════════════════════════════════════════
+CI/CD Observability — Flink Analytics
+Docker commands used to get the full stack running end-to-end
+════════════════════════════════════════════════════════════════════════════
+All commands assume the working directory is the repo root
+(cicd-observability-flinkanalytics/) unless noted otherwise.
+Run from Git Bash / WSL / any POSIX shell. On native PowerShell, drop
+MSYS_NO_PATHCONV and use backtick line continuations instead of \.
+
+
+──────────────────────────────────────────────────────────────────────────────
+1) BUILD THE FAT JAR (Maven, not Docker, but required before the image build)
+──────────────────────────────────────────────────────────────────────────────
+mvn clean package -DskipTests
+
+
+──────────────────────────────────────────────────────────────────────────────
+2) BUILD THE FLINK IMAGE
+──────────────────────────────────────────────────────────────────────────────
+# Build context is the repo root (Dockerfile COPYs deploy/docker/... and
+# src/main/resources/... relative to it)
+docker build -t cicd-flink-analytics:latest -f Dockerfile .
+
+# Sanity checks used while debugging the image itself:
+docker run --rm cicd-flink-analytics:latest sh -c "id"                       # confirm runtime user is uid 9999 (flink)
+docker run --rm cicd-flink-analytics:latest sh -c "stat /tmp/flink-checkpoints"  # confirm checkpoint dir ownership
+docker inspect cicd-flink-analytics:latest --format '{{.Config.User}}'
+docker history cicd-flink-analytics:latest --no-trunc | grep -i "mkdir\|USER"
+
+
+──────────────────────────────────────────────────────────────────────────────
+3) START THE STACK
+──────────────────────────────────────────────────────────────────────────────
+# NOTE: docker compose up --build does NOT build the Flink image — there is
+# no `build:` section for flink-jm/flink-tm-1 in docker-compose.yml by design
+# (the image is expected to already exist locally via step 2 above).
+docker compose up -d
+
+# Check status / logs
+docker compose ps
+docker compose logs flink-jm --tail=50
+docker logs flink-jm --tail 80
+docker logs flink-jm --since 5m
+docker logs grafana --tail 80
+docker logs flink-tm-1 --tail 60
+
+# Stop everything (keeps named volumes — Kafka/Postgres/Grafana data persists)
+docker compose down
+
+
+──────────────────────────────────────────────────────────────────────────────
+4) FIXING ROOT-OWNED NAMED VOLUMES (checkpoints + RocksDB)
+──────────────────────────────────────────────────────────────────────────────
+# Diagnose: inspect a named volume's ownership directly via a throwaway container
+docker run --rm -v cicd-observability-flinkanalytics_flink-checkpoints:/data busybox sh -c "ls -la /data"
+
+# After adding `RUN mkdir -p ... && chown -R flink:flink ...` to the Dockerfile
+# and rebuilding, the STALE volume (already created root-owned) must be wiped
+# so Docker repopulates it from the corrected image on next start:
+docker compose stop flink-jm flink-tm-1
+docker compose rm -f flink-jm flink-tm-1
+docker volume rm cicd-observability-flinkanalytics_flink-checkpoints
+docker volume rm cicd-observability-flinkanalytics_flink-rocksdb-1
+docker compose up -d flink-jm flink-tm-1
+
+
+──────────────────────────────────────────────────────────────────────────────
+5) REBUILDING AFTER CODE / CONFIG CHANGES
+──────────────────────────────────────────────────────────────────────────────
+# Whenever Java source, Dockerfile, or deploy/docker/flink-conf.yaml changed:
+docker build -t cicd-flink-analytics:latest -f Dockerfile .
+docker compose up -d --force-recreate flink-jm flink-tm-1
+
+# Whenever only docker-compose.yml itself changed (env vars, volumes, memory):
+docker compose up -d --force-recreate <service-name>
+
+
+──────────────────────────────────────────────────────────────────────────────
+6) MEMORY / RESOURCE CHECKS
+──────────────────────────────────────────────────────────────────────────────
+docker info --format '{{.MemTotal}}'          # Docker Desktop VM's total memory budget
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}"
+
+
+──────────────────────────────────────────────────────────────────────────────
+7) VERIFYING THE FLINK JOB ITSELF
+──────────────────────────────────────────────────────────────────────────────
+curl -s http://localhost:8082/jobs                 # job id + status (RUNNING / RESTARTING / FAILED)
+curl -sf http://localhost:8082/overview             # JobManager REST health
+
+# Wait-until-healthy pattern used repeatedly during debugging:
+until curl -sf http://localhost:8082/overview >/dev/null 2>&1; do sleep 3; done
+
+
+──────────────────────────────────────────────────────────────────────────────
+8) KAFKA — TOPIC INSPECTION
+──────────────────────────────────────────────────────────────────────────────
+# MSYS_NO_PATHCONV=1 is needed on Git Bash / Windows so it doesn't mangle the
+# /opt/kafka/... in-container path into a Windows path.
+MSYS_NO_PATHCONV=1 docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --list
+
+MSYS_NO_PATHCONV=1 docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --describe --topic cicd-events
+
+
+──────────────────────────────────────────────────────────────────────────────
+9) PUBLISHING TEST EVENTS TO KAFKA (via the kcat container already in the stack)
+──────────────────────────────────────────────────────────────────────────────
+# Bulk publish from a generated JSONL file (one JSON message per line):
+docker cp /tmp/dora-events.jsonl kcat:/tmp/dora-events.jsonl
+docker exec kcat sh -c "kcat -P -b kafka:29092 -t cicd-events -l /tmp/dora-events.jsonl"
+
+# Publish a single event by piping it straight into kcat via stdin:
+echo '<json-event>' | docker exec -i kcat kcat -P -b kafka:29092 -t cicd-events
+
+
+──────────────────────────────────────────────────────────────────────────────
+10) VERIFYING RESULTS IN POSTGRES
+──────────────────────────────────────────────────────────────────────────────
+docker exec postgres psql -U flink -d cicd_metrics -c \
+  "SELECT metric_type, pipeline_id, service_name, round(value::numeric,2) AS value, performance_band FROM cicd_metrics ORDER BY id DESC LIMIT 20;"
+
+docker exec postgres psql -U flink -d cicd_metrics -c \
+  "SELECT metric_type, count(*) FROM cicd_metrics GROUP BY metric_type ORDER BY 2 DESC;"
+
+# Confirm a specific DB role/permissions work (used while debugging Grafana's datasource):
+docker exec postgres psql -U grafana_reader -d cicd_metrics -c \
+  "SELECT count(*) FROM cicd_metrics WHERE metric_type='DEPLOYMENT_FREQUENCY';"
+
+
+──────────────────────────────────────────────────────────────────────────────
+11) VERIFYING GRAFANA
+──────────────────────────────────────────────────────────────────────────────
+# Recreate Grafana after changing its datasource/dashboard provisioning files:
+docker compose up -d --force-recreate grafana
+
+# List provisioned datasources / dashboards:
+curl -s -u admin:admin http://localhost:3000/api/datasources
+curl -s -u admin:admin http://localhost:3000/api/search?type=dash-db
+
+# Run a panel's exact query directly against Grafana's query engine
+# (bypasses the dashboard UI entirely — useful for isolating backend vs.
+# browser-side issues):
+curl -s -u admin:admin -X POST http://localhost:3000/api/ds/query \
+  -H "Content-Type: application/json" \
+  -d '{
+        "queries": [{
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "postgres_cicd"},
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = '\''DEPLOYMENT_FREQUENCY'\'' ORDER BY inserted_at",
+          "format": "time_series"
+        }],
+        "from": "now-6h", "to": "now"
+      }'
+
+# Manually test the Annotations API (used to diagnose the 403
+# annotations:create permission issue):
+curl -s -X POST http://localhost:3000/api/annotations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer changeme" \
+  -d '{"tags":["test"],"text":"test annotation"}'
+
+
+════════════════════════════════════════════════════════════════════════════
+Bugs found and fixed along the way (for context — see git history for diffs):
+════════════════════════════════════════════════════════════════════════════
+1. Dockerfile: COPY docker/flink-conf.yaml -> COPY deploy/docker/flink-conf.yaml
+   (path assumed build context was deploy/, but it's the repo root)
+2. Dockerfile: added `RUN mkdir -p /tmp/flink-checkpoints /tmp/rocksdb &&
+   chown -R flink:flink ...` — fresh named volumes are root-owned by default,
+   but Flink runs as uid 9999
+3. docker-compose.yml: Grafana provisioning volumes pointed at ./docker/...
+   instead of ./deploy/docker/... (same repo-root-vs-deploy/ path confusion)
+4. docker-compose.yml: reduced to 1 TaskManager + lower JVM heaps
+   (jobmanager 1024m, taskmanager 1280m, Kafka/kafka-ui heap caps) to fit
+   Docker Desktop's 3.678GB memory budget on this machine
+5. docker-compose.yml: GF_AUTH_ANONYMOUS_ORG_ROLE set to Editor — the
+   GRAFANA_API_KEY env var was always a placeholder ("changeme"), never a
+   real token, so GrafanaSink's annotation POSTs fell through to the
+   anonymous session, which defaulted to Viewer (no annotations:create)
+6. FlinkConfig.java: KAFKA_BOOTSTRAP/PG_URL/PG_USER/PG_PASSWORD/GRAFANA_URL/
+   GRAFANA_API_KEY were hardcoded Java constants that silently ignored the
+   matching environment variables docker-compose.yml already set
+7. PostgresMetricSink.java: window_start_ms/window_end_ms parameter binding
+   was commented out (leftover from a String/long type change on the model),
+   causing "No value specified for parameter 4" on every insert
+8. deploy/docker/flink-conf.yaml: added env.java.opts.all with --add-opens
+   flags — a direct consequence of the Java 11 -> 17 upgrade; Kryo's
+   fallback serializer needs reflective access Java 17 blocks by default
+9. GrafanaSink.java: shouldAnnotate() had no case for LEAD_TIME_FOR_CHANGES /
+   MEAN_TIME_TO_RECOVERY, so those two DORA metrics were silently never
+   annotated in Grafana even though they reached Postgres fine
+10. grafana-datasource.yaml / init.sql: switched Grafana's datasource from a
+    separate grafana_reader/grafana_readonly account to the same flink/admin
+    credentials already defined in docker-compose.yml

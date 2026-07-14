@@ -1,0 +1,74 @@
+{
+  "topic": "cicd-events",
+  "description": "Test CicdEvent payloads published to Kafka topic 'cicd-events' while verifying the DORA metrics pipeline end-to-end (DoraOperators -> Postgres -> Grafana). Each entry is the exact JSON message body sent via kcat, matching CicdEventDeserializer's expected {\"event\": {...}} wrapper.",
+  "how_to_replay": "docker cp <this-file> kcat:/tmp/dora-test-events.jsonl (after converting the 'events' array to one JSON object per line), then: docker exec kcat sh -c \"kcat -P -b kafka:29092 -t cicd-events -l /tmp/dora-test-events.jsonl\"",
+  "groups": [
+    {
+      "name": "checkout-service — 9 days of backdated history",
+      "purpose": "Populates Deployment Frequency (1-day windows), Change Failure Rate (7-day windows, includes 2 DEPLOY_FAILED on days -6 and -3), and Lead Time for Changes (BUILD_STARTED -> DEPLOY_SUCCESS pairs, ~35 min lead time)",
+      "events": [
+        {"event":{"event_id":"evt-21051-15066","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk9","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-05T09:00:00"}},
+        {"event":{"event_id":"evt-28219-1428","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk9","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-05T09:35:00"}},
+        {"event":{"event_id":"evt-24688-26600","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk8","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-06T09:00:00"}},
+        {"event":{"event_id":"evt-13704-11961","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk8","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-06T09:35:00"}},
+        {"event":{"event_id":"evt-10096-15823","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk7","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-07T09:00:00"}},
+        {"event":{"event_id":"evt-30042-2746","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk7","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-07T09:35:00"}},
+        {"event":{"event_id":"evt-16159-8213","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk6","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-08T09:00:00"}},
+        {"event":{"event_id":"evt-18416-5201","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk6","stage":"DEPLOY","event_type":"DEPLOY_FAILED","status":"FAILURE","event_timestamp":"2026-07-08T09:35:00"}},
+        {"event":{"event_id":"evt-4071-8785","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk5","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-09T09:00:00"}},
+        {"event":{"event_id":"evt-5848-17797","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk5","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-09T09:35:00"}},
+        {"event":{"event_id":"evt-19153-4249","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk4","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-10T09:00:00"}},
+        {"event":{"event_id":"evt-24672-16485","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk4","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-10T09:35:00"}},
+        {"event":{"event_id":"evt-20116-28340","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk3","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-11T09:00:00"}},
+        {"event":{"event_id":"evt-28239-15219","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk3","stage":"DEPLOY","event_type":"DEPLOY_FAILED","status":"FAILURE","event_timestamp":"2026-07-11T09:35:00"}},
+        {"event":{"event_id":"evt-12145-11243","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk2","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-12T09:00:00"}},
+        {"event":{"event_id":"evt-24185-6678","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk2","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-12T09:35:00"}},
+        {"event":{"event_id":"evt-7090-25091","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk1","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-13T09:00:00"}},
+        {"event":{"event_id":"evt-23535-22365","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"chk1","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-13T09:35:00"}}
+      ]
+    },
+    {
+      "name": "checkout-service — MTTR incident (day -5)",
+      "purpose": "BUILD_FAILED followed 47 minutes later by BUILD_SUCCESS for the same pipeline -> Mean Time to Recovery = 47 min (Elite band)",
+      "events": [
+        {"event":{"event_id":"evt-18403-10971","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"incident1","stage":"BUILD","event_type":"BUILD_FAILED","status":"FAILURE","event_timestamp":"2026-07-09T14:00:00"}},
+        {"event":{"event_id":"evt-20210-5400","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"incident1","stage":"BUILD","event_type":"BUILD_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-09T14:47:00"}}
+      ]
+    },
+    {
+      "name": "payment-service — 3 days of backdated history",
+      "purpose": "Second pipeline for multi-series dashboard panels. All deploys succeed, 20 min lead time (Elite band)",
+      "events": [
+        {"event":{"event_id":"evt-5439-28274","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay3","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-11T10:00:00"}},
+        {"event":{"event_id":"evt-7323-10395","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay3","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-11T10:20:00"}},
+        {"event":{"event_id":"evt-25593-4456","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay2","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-12T10:00:00"}},
+        {"event":{"event_id":"evt-23819-13696","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay2","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-12T10:20:00"}},
+        {"event":{"event_id":"evt-31935-32002","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay1","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-13T10:00:00"}},
+        {"event":{"event_id":"evt-16319-14697","pipeline_id":"payment-service","repository_id":"payment-service","analysis_name":"payment-service-analysis","analysis_type":"CI","service_name":"payment","branch":"main","commit_sha":"pay1","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-13T10:20:00"}}
+      ]
+    },
+    {
+      "name": "Watermark trigger (batch 1)",
+      "purpose": "Dated close to 'now' to advance the Flink watermark past all the backdated 1-day/7-day tumbling windows above, forcing them to flush immediately instead of waiting for real wall-clock time to pass",
+      "events": [
+        {"event":{"event_id":"evt-8304-10842","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"trigger","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-14T06:41:17"}}
+      ]
+    },
+    {
+      "name": "Verification pair — live lead-time + Grafana annotation check",
+      "purpose": "Sent after fixing the GrafanaSink/Postgres bugs, to confirm a fresh BUILD_STARTED -> DEPLOY_SUCCESS pair produces an immediate LEAD_TIME_FOR_CHANGES row (2 min) and a live Grafana annotation",
+      "events": [
+        {"event":{"event_id":"verify-1","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"verify1","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-14T07:09:18"}},
+        {"event":{"event_id":"verify-2","pipeline_id":"checkout-service","repository_id":"checkout-service","analysis_name":"checkout-service-analysis","analysis_type":"CI","service_name":"checkout","branch":"main","commit_sha":"verify1","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-14T07:11:18"}}
+      ]
+    },
+    {
+      "name": "blood-pressure-calculator — single deploy + watermark trigger (batch 2)",
+      "purpose": "User-requested single DEPLOY_SUCCESS event for service 'blood-pressure-calculator', followed by a next-day trigger event to flush its Deployment Frequency window immediately",
+      "events": [
+        {"event":{"event_id":"evt-1853","pipeline_id":"blood-pressure-calculator","repository_id":"blood-pressure-calculator","analysis_name":"blood-pressure-calculator-analysis","analysis_type":"CI","service_name":"blood-pressure-calculator","branch":"main","commit_sha":"bp-14674","stage":"DEPLOY","event_type":"DEPLOY_SUCCESS","status":"SUCCESS","event_timestamp":"2026-07-14T07:34:08"}},
+        {"event":{"event_id":"evt-trigger-16009","pipeline_id":"blood-pressure-calculator","repository_id":"blood-pressure-calculator","analysis_name":"blood-pressure-calculator-analysis","analysis_type":"CI","service_name":"blood-pressure-calculator","branch":"main","commit_sha":"trigger","stage":"BUILD","event_type":"BUILD_STARTED","status":"SUCCESS","event_timestamp":"2026-07-15T01:00:00"}}
+      ]
+    }
+  ]
+}

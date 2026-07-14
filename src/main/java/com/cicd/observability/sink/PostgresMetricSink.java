@@ -11,6 +11,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 /**
  * PostgreSQL sink for all four use case results.
@@ -96,8 +98,8 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
                     ? metric.getMetricType().name() : "UNKNOWN");
             statement.setString(2,  nullSafe(metric.getPipelineId()));
             statement.setString(3,  nullSafe(metric.getServiceName()));
-//            statement.setLong(4,    metric.getWindowStartMs());
-//            statement.setLong(5,    metric.getWindowEndMs());
+            statement.setObject(4,  toEpochMs(metric.getWindowStartMs()));
+            statement.setObject(5,  toEpochMs(metric.getWindowEndMs()));
             statement.setDouble(6,  metric.getValue());
             statement.setString(7,  nullSafe(metric.getPerformanceBand()));
             statement.setLong(8,    metric.getSampleCount());
@@ -124,5 +126,15 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
 
     private static String nullSafe(String s) {
         return s == null ? "" : s;
+    }
+
+    /** Parses the model's ISO LocalDateTime string (UTC, no zone suffix) back to epoch millis. */
+    private static Long toEpochMs(String isoLocalDateTime) {
+        if (isoLocalDateTime == null || isoLocalDateTime.isEmpty()) return null;
+        try {
+            return LocalDateTime.parse(isoLocalDateTime).toInstant(ZoneOffset.UTC).toEpochMilli();
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

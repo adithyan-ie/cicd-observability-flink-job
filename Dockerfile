@@ -11,7 +11,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── Stage 1: Maven build ───────────────────────────────────────────────────────
-FROM maven:3.9.6-eclipse-temurin-11 AS builder
+FROM maven:3.9.6-eclipse-temurin-17 AS builder
 
 WORKDIR /build
 
@@ -24,7 +24,7 @@ COPY src ./src
 RUN mvn clean package -DskipTests -q
 
 # ── Stage 2: Flink runtime ─────────────────────────────────────────────────────
-FROM flink:1.18.1-java11
+FROM flink:1.18.1-java17
 
 # The JAR goes into /opt/flink/usrlib — Flink Application Mode scans this
 # directory automatically and submits the job when JobManager starts.
@@ -35,9 +35,18 @@ COPY --from=builder \
 # PostgreSQL init SQL — useful for first-time DB setup from within the cluster
 COPY src/main/resources/init.sql /opt/flink/init.sql
 
+# Pre-create the checkpoint and RocksDB local-state directories owned by the
+# flink user (uid 9999). Docker copies this ownership into the named volume
+# mounted at the same path on first container start — without it, the volume
+# is created root-owned (RUN executes as root at build time; the image
+# switches to flink only via its entrypoint script at runtime) and the
+# non-root flink user can't write checkpoint/RocksDB state to it.
+RUN mkdir -p /tmp/flink-checkpoints /tmp/rocksdb && \
+    chown -R flink:flink /tmp/flink-checkpoints /tmp/rocksdb
+
 # Override Flink config with our job-specific settings
 # These are defaults — all values can be overridden via env vars in Docker/K8s
-COPY docker/flink-conf.yaml /opt/flink/conf/flink-conf.yaml
+COPY deploy/docker/flink-conf.yaml /opt/flink/conf/flink-conf.yaml
 
 # Environment variable defaults (overridden in docker-compose / K8s ConfigMap)
 ENV KAFKA_BOOTSTRAP="kafka:29092" \
@@ -50,7 +59,7 @@ ENV KAFKA_BOOTSTRAP="kafka:29092" \
     FLINK_PARALLELISM="2" \
     PG_URL="jdbc:postgresql://postgres:5432/cicd_metrics" \
     PG_USER="flink" \
-    PG_PASSWORD="flink_secret" \
+    PG_PASSWORD="admin" \
     GRAFANA_URL="http://grafana:3000" \
     GRAFANA_API_KEY="changeme"
 

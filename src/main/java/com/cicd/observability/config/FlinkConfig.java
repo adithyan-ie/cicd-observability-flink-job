@@ -36,8 +36,13 @@ import java.util.Properties;
  */
 public class FlinkConfig {
 
+    private static String env(String key, String defaultValue) {
+        String v = System.getenv(key);
+        return (v == null || v.isEmpty()) ? defaultValue : v;
+    }
+
     // ── Kafka ──────────────────────────────────────────────────────────
-    public static final String KAFKA_BOOTSTRAP       = "kafka:29092";
+    public static final String KAFKA_BOOTSTRAP       = env("KAFKA_BOOTSTRAP", "kafka:29092");
     public static final String TOPIC_CICD_EVENTS     = "cicd-events";
     public static final String TOPIC_METRICS         = "pipeline-metrics";
     public static final String TOPIC_HEALTH          = "pipeline-health";
@@ -59,13 +64,13 @@ public class FlinkConfig {
     public static final Duration CEP_PATTERN_WINDOW = Duration.ofMinutes(10);
 
     // ── Postgres ───────────────────────────────────────────────────────
-    public static final String PG_URL      = "jdbc:postgresql://postgres:5432/cicd_metrics";
-    public static final String PG_USER     = "flink";
-    public static final String PG_PASSWORD = "flink_secret";
+    public static final String PG_URL      = env("PG_URL", "jdbc:postgresql://postgres:5432/cicd_metrics");
+    public static final String PG_USER     = env("PG_USER", "flink");
+    public static final String PG_PASSWORD = env("PG_PASSWORD", "flink_secret");
 
     // ── Grafana ───────────────────────────────────────────────────────
-    public static final String GRAFANA_URL     = "http://grafana:3000";
-    public static final String GRAFANA_API_KEY = "your-grafana-api-key";
+    public static final String GRAFANA_URL     = env("GRAFANA_URL", "http://grafana:3000");
+    public static final String GRAFANA_API_KEY = env("GRAFANA_API_KEY", "your-grafana-api-key");
     public static final String GRAFANA_DS_NAME = "PostgreSQL";
 
     // ═══════════════════════════════════════════════════════════════════

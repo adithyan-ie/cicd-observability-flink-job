@@ -49,11 +49,11 @@ END $$;
 GRANT SELECT ON cicd_metrics TO grafana_reader;
 GRANT SELECT ON cicd_alerts  TO grafana_reader;
 
--- Flink writer user
+-- Flink writer user (also used by Grafana's data source — see grafana-datasource.yaml)
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'flink') THEN
-        CREATE ROLE flink LOGIN PASSWORD 'flink_secret';
+        CREATE ROLE flink LOGIN PASSWORD 'admin';
     END IF;
 END $$;
 GRANT INSERT, SELECT ON cicd_metrics TO flink;

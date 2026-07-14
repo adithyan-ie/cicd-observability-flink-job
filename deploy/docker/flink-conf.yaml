@@ -17,6 +17,13 @@ taskmanager.numberOfTaskSlots: 4
 # Parallelism default — override via FLINK_PARALLELISM env var
 parallelism.default: 2
 
+# ── Java 17 module access ─────────────────────────────────────────────────────
+# Kryo/Chill's fallback serializers (e.g. ArraysAsListSerializer) reflectively
+# open java.util internals. Java 9+'s module system blocks this by default;
+# Java 17 enforces it strictly, so the JVM needs an explicit --add-opens or
+# tasks fail with InaccessibleObjectException on every restart.
+env.java.opts.all: --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+
 # ── RocksDB state backend (also set programmatically in FlinkConfig.java) ─────
 # Declarative config here acts as a fallback / documentation.
 # The programmatic call in FlinkConfig.java takes precedence.

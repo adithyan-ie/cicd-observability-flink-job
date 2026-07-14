@@ -98,8 +98,10 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
                 return "Low".equals(metric.getPerformanceBand())
                     || "Elite".equals(metric.getPerformanceBand());
             case DEPLOYMENT_FREQUENCY:
+            case LEAD_TIME_FOR_CHANGES:
             case CHANGE_FAILURE_RATE:
-                return "Low".equals(metric.getPerformanceBand());  // Only alert on Low band
+            case MEAN_TIME_TO_RECOVERY:
+                return true;   // Always annotate DORA metrics, regardless of band
             default:
                 return false;
         }

@@ -120,8 +120,21 @@ deploy_k8s() {
 
     # 3. Apply manifests
     print_step "Applying namespace, RBAC, secrets..."
+    kubectl apply -f kubernetes/base/00-namespace-configmap.yaml
     kubectl apply -f kubernetes/operator/rbac.yaml
-    kubectl apply -f kubernetes/manifests/postgres-grafana.yaml
+
+    print_step "Provisioning Grafana datasource + dashboard ConfigMaps..."
+    kubectl create configmap grafana-datasource-config -n cicd-observability \
+        --from-file=postgres.yaml=docker/grafana-datasource.yaml \
+        --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create configmap grafana-dashboards-provider-config -n cicd-observability \
+        --from-file=provider.yaml=docker/grafana-dashboards-provider.yaml \
+        --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create configmap grafana-dashboards-config -n cicd-observability \
+        --from-file=dora-metrics.json=docker/dashboards/dora-metrics.json \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    kubectl apply -f kubernetes/base/postgres-grafana.yaml
 
     print_step "Applying FlinkDeployment CRD..."
     kubectl apply -f kubernetes/operator/flink-deployment.yaml

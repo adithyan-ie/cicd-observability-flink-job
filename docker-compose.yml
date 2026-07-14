@@ -8,15 +8,14 @@
 #   postgres      — Metric storage (read by Grafana)
 #   grafana       — Dashboards + annotations at http://localhost:3000
 #   flink-jm      — Flink JobManager (Application Mode — runs your job)
-#   flink-tm-1    — Flink TaskManager 1 (executes operator tasks)
-#   flink-tm-2    — Flink TaskManager 2 (executes operator tasks)
+#   flink-tm-1    — Flink TaskManager (executes operator tasks)
 #
 # How it works:
 #   flink-jm starts with args: ["standalone-job"]
 #     → loads cicd-flink-analytics.jar from /opt/flink/usrlib/
 #     → calls PipelineObservabilityJob.main()
 #     → builds the streaming DAG (EventRouter + 4 use cases)
-#     → distributes tasks to flink-tm-1 and flink-tm-2
+#     → distributes tasks to flink-tm-1
 #
 #   flink-tm-* starts with args: ["taskmanager"]
 #     → registers with JobManager on flink-jm:6123
@@ -24,6 +23,11 @@
 #     → each slot runs only the events routed to it by the EventRouter
 #
 #   SAME IMAGE — different role set by the args field.
+#
+#   NOTE: single TaskManager + reduced JVM heaps below are sized for
+#   memory-constrained local dev machines (~3.5GB Docker Desktop budget).
+#   For a less constrained host, add flink-tm-2 back and raise memory
+#   sizes closer to deploy/docker/flink-conf.yaml's documented defaults.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 x-flink-env: &flink-env
@@ -38,7 +42,7 @@ x-flink-env: &flink-env
   # Postgres
   PG_URL:      jdbc:postgresql://postgres:5432/cicd_metrics
   PG_USER:     flink
-  PG_PASSWORD: flink_secret
+  PG_PASSWORD: admin
   # Grafana
   GRAFANA_URL:     http://grafana:3000
   GRAFANA_API_KEY: changeme
@@ -71,6 +75,8 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_LOG_RETENTION_HOURS: 168
+      # Capped for memory-constrained local dev (default heap is larger)
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
       interval: 15s
@@ -97,6 +103,8 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
       DYNAMIC_CONFIG_ENABLED: 'true'
       AUTH_TYPE: "DISABLED"
+      # Capped for memory-constrained local dev
+      JAVA_OPTS: "-Xmx256m"
     networks:
       - cicd-net
 
@@ -124,7 +132,7 @@ services:
     environment:
       POSTGRES_DB:       cicd_metrics
       POSTGRES_USER:     flink
-      POSTGRES_PASSWORD: flink_secret
+      POSTGRES_PASSWORD: admin
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # Run init.sql automatically on first start
@@ -151,10 +159,18 @@ services:
       GF_SECURITY_ADMIN_USER:     admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED:  "true"
+      # GRAFANA_API_KEY is a placeholder, not a real token — GrafanaSink's
+      # Bearer header is effectively ignored and falls through to this
+      # anonymous role. Needs annotations:create for GrafanaSink's POSTs
+      # to succeed (default Viewer role gets 403). Local dev only.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
     volumes:
       - grafana-data:/var/lib/grafana
       # Auto-provision Postgres as a data source
-      - ./docker/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/postgres.yaml:ro
+      - ./deploy/docker/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/postgres.yaml:ro
+      # Auto-provision the real-time DORA metrics dashboard
+      - ./deploy/docker/grafana-dashboards-provider.yaml:/etc/grafana/provisioning/dashboards/provider.yaml:ro
+      - ./deploy/docker/dashboards:/etc/grafana/provisioning/dashboards/json:ro
     networks:
       - cicd-net
 
@@ -183,6 +199,7 @@ services:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jm
         parallelism.default: 2
+        jobmanager.memory.process.size: 1024m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
     healthcheck:
@@ -194,14 +211,12 @@ services:
     networks:
       - cicd-net
 
-  # ── Flink TaskManager 1 ────────────────────────────────────────────────────
+  # ── Flink TaskManager ──────────────────────────────────────────────────────
   # Role: "taskmanager"
   #   - Registers with JobManager at flink-jm:6123
-  #   - Provides 4 task slots (numberOfTaskSlots: 4)
-  #   - Executes operator tasks assigned by the JobManager:
-  #       * EventRouter (classifies every event — runs on ALL events)
-  #       * DORA operators (runs on DORA_TAG events only)
-  #       * PipelineHealthOperator (runs on HEALTH_TAG events only)
+  #   - Provides 4 task slots (numberOfTaskSlots: 4) — enough for parallelism=2
+  #   - Sole TaskManager for local dev: executes ALL operator tasks
+  #     (EventRouter, DORA, PipelineHealth, LateEvent, CEP/FailurePattern)
   #   - Maintains RocksDB state for MapState/ValueState operators
   flink-tm-1:
     image: cicd-flink-analytics:latest
@@ -216,38 +231,10 @@ services:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jm
         taskmanager.numberOfTaskSlots: 4
-        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.process.size: 1280m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
       - flink-rocksdb-1:/tmp/rocksdb
-    networks:
-      - cicd-net
-
-  # ── Flink TaskManager 2 ────────────────────────────────────────────────────
-  # Role: "taskmanager"
-  #   - Same as flink-tm-1, provides additional slots
-  #   - Flink automatically distributes operator tasks across both TMs
-  #   - Executes:
-  #       * LateEventOperator (runs on LATE_TAG events only)
-  #       * FailurePatternOperator/CEP (runs on CEP_TAG events only)
-  #   - RocksDB on separate volume to avoid I/O contention
-  flink-tm-2:
-    image: cicd-flink-analytics:latest
-    container_name: flink-tm-2
-    restart: unless-stopped
-    depends_on:
-      flink-jm:
-        condition: service_healthy
-    command: ["taskmanager"]
-    environment:
-      <<: *flink-env
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jm
-        taskmanager.numberOfTaskSlots: 4
-        taskmanager.memory.process.size: 2048m
-    volumes:
-      - flink-checkpoints:/tmp/flink-checkpoints
-      - flink-rocksdb-2:/tmp/rocksdb
     networks:
       - cicd-net
 
@@ -259,6 +246,5 @@ volumes:
   kafka-data:
   postgres-data:
   grafana-data:
-  flink-checkpoints:    # shared between JM and both TMs for checkpoint access
-  flink-rocksdb-1:      # RocksDB state for TaskManager 1
-  flink-rocksdb-2:      # RocksDB state for TaskManager 2
+  flink-checkpoints:    # shared between JM and TM for checkpoint access
+  flink-rocksdb-1:      # RocksDB state for the TaskManager

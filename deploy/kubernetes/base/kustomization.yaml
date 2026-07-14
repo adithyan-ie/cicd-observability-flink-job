@@ -7,6 +7,23 @@ resources:
   - 00-namespace-configmap.yaml
   - 01-jobmanager.yaml
   - 02-taskmanager.yaml
+  - postgres-grafana.yaml
+
+# Grafana provisioning files are shared with docker-compose (deploy/docker/)
+# so both deployment paths stay in sync from a single source of truth.
+configMapGenerator:
+  - name: grafana-datasource-config
+    namespace: cicd-observability
+    files:
+      - postgres.yaml=../../docker/grafana-datasource.yaml
+  - name: grafana-dashboards-provider-config
+    namespace: cicd-observability
+    files:
+      - provider.yaml=../../docker/grafana-dashboards-provider.yaml
+  - name: grafana-dashboards-config
+    namespace: cicd-observability
+    files:
+      - dora-metrics.json=../../docker/dashboards/dora-metrics.json
 
 commonLabels:
   app.kubernetes.io/name:       cicd-flink-analytics

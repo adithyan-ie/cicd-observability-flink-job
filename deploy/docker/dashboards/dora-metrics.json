@@ -1,0 +1,120 @@
+{
+  "uid": "cicd-dora-metrics",
+  "title": "CI/CD DORA Metrics (Real-time)",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-6h", "to": "now" },
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "annotations": {
+    "list": [
+      {
+        "name": "CI/CD events",
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "iconColor": "rgba(255, 96, 96, 1)",
+        "type": "tags",
+        "tags": ["cicd-observability"]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Deployment Frequency (deploys/day)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Lead Time for Changes (minutes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "m" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'LEAD_TIME_FOR_CHANGES' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Change Failure Rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Mean Time to Recovery (minutes)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "m" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'MEAN_TIME_TO_RECOVERY' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Pipeline Health Score",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "short", "max": 100, "min": 0 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Latest Metric Values",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band FROM cicd_metrics ORDER BY metric_type, pipeline_id, inserted_at DESC",
+          "rawQuery": true
+        }
+      ]
+    }
+  ]
+}
