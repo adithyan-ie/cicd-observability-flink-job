@@ -31,7 +31,7 @@ import java.util.Set;
  *   DORA_TAG      → BUILD_STARTED, DEPLOY_SUCCESS, DEPLOY_FAILED,
  *                   BUILD_FAILED, BUILD_SUCCESS (for lead-time, CFR, MTTR)
  *
- *   HEALTH_TAG    → ANY event with a stage (BUILD/TEST/SONARQUBE/PACKAGE)
+ *   HEALTH_TAG    → ANY event with a stage (BUILD/TEST/SONARQUBE/PACKAGE/DEPLOY)
  *                   because health score is a composite of all stage outcomes
  *
  *   LATE_TAG      → Events where processing_time − event_time > threshold
@@ -87,7 +87,8 @@ public class EventRouter extends ProcessFunction<CicdEvent, CicdEvent> {
             "BUILD_STARTED",  "BUILD_SUCCESS",  "BUILD_FAILED",
             "TEST_STARTED",   "TEST_SUCCESS",   "TEST_FAILED",
             "SONARQUBE_STARTED", "SONARQUBE_SUCCESS", "SONARQUBE_FAILED",
-            "PACKAGE_STARTED","PACKAGE_SUCCESS","PACKAGE_FAILED"
+            "PACKAGE_STARTED","PACKAGE_SUCCESS","PACKAGE_FAILED",
+            "DEPLOY_STARTED", "DEPLOY_SUCCESS", "DEPLOY_FAILED"
     );
 
     /** Exactly the event types that participate in the CEP cascade pattern */

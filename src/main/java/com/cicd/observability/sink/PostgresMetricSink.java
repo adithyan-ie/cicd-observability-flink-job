@@ -42,7 +42,11 @@ import java.time.ZoneOffset;
  *      ON cicd_metrics (metric_type, pipeline_id);
  *  CREATE INDEX idx_cicd_metrics_window
  *      ON cicd_metrics (window_start_ms, window_end_ms);
+ *  CREATE UNIQUE INDEX ux_cicd_metrics_window
+ *      ON cicd_metrics (metric_type, pipeline_id, window_start_ms, window_end_ms);
  * ──────────────────────────────────────────────────────────────────
+ * Recomputing the same window (e.g. after a job restart replays the Kafka
+ * backlog) UPSERTs via ON CONFLICT instead of inserting a duplicate row.
  *
  * For the CEP / late-event string alerts, use PostgresStringSink below.
  */
@@ -55,7 +59,15 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
             "INSERT INTO cicd_metrics " +
             "(metric_type, pipeline_id, service_name, window_start_ms, window_end_ms, " +
             " value, performance_band, sample_count, detail, computed_at_ms) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT (metric_type, pipeline_id, window_start_ms, window_end_ms) DO UPDATE SET " +
+            "  service_name     = EXCLUDED.service_name, " +
+            "  value            = EXCLUDED.value, " +
+            "  performance_band = EXCLUDED.performance_band, " +
+            "  sample_count     = EXCLUDED.sample_count, " +
+            "  detail           = EXCLUDED.detail, " +
+            "  computed_at_ms   = EXCLUDED.computed_at_ms, " +
+            "  inserted_at      = NOW()";
 
     private final String url;
     private final String user;

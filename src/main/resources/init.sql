@@ -24,6 +24,11 @@ CREATE INDEX IF NOT EXISTS idx_cicd_metrics_window
 CREATE INDEX IF NOT EXISTS idx_cicd_metrics_service
     ON cicd_metrics (service_name);
 
+-- One row per computed window: replays / job restarts recompute the same
+-- (metric_type, pipeline_id, window) and should overwrite, not duplicate.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cicd_metrics_window
+    ON cicd_metrics (metric_type, pipeline_id, window_start_ms, window_end_ms);
+
 -- CEP alerts + pattern timeouts + late event audit records
 CREATE TABLE IF NOT EXISTS cicd_alerts (
     id          BIGSERIAL    PRIMARY KEY,
@@ -56,7 +61,7 @@ BEGIN
         CREATE ROLE flink LOGIN PASSWORD 'admin';
     END IF;
 END $$;
-GRANT INSERT, SELECT ON cicd_metrics TO flink;
+GRANT INSERT, UPDATE, SELECT ON cicd_metrics TO flink;
 GRANT INSERT, SELECT ON cicd_alerts  TO flink;
 GRANT USAGE, SELECT ON SEQUENCE cicd_metrics_id_seq TO flink;
 GRANT USAGE, SELECT ON SEQUENCE cicd_alerts_id_seq  TO flink;

@@ -21,10 +21,11 @@ import java.time.ZoneOffset;
  * (slides every 1 minute so dashboards update frequently).
  *
  * Score formula:
- *   buildSuccessRate  (weight 0.40) × 100
- *   testSuccessRate   (weight 0.30) × 100
- *   sonarPassRate     (weight 0.20) × 100
+ *   buildSuccessRate  (weight 0.35) × 100
+ *   testSuccessRate   (weight 0.25) × 100
+ *   sonarPassRate     (weight 0.15) × 100
  *   packageSuccessRate(weight 0.10) × 100
+ *   deploySuccessRate (weight 0.15) × 100
  *
  * Flink features used:
  *   - SlidingEventTimeWindows  — overlapping windows for near-real-time updates
@@ -52,6 +53,8 @@ public class PipelineHealthOperator {
         long sonarTotal = 0, sonarSuccess = 0;
         // Package
         long pkgTotal   = 0, pkgSuccess   = 0;
+        // Deploy
+        long deployTotal = 0, deploySuccess = 0;
         String serviceName = "";
     }
 
@@ -80,6 +83,9 @@ public class PipelineHealthOperator {
                 } else if (et.startsWith("PACKAGE_")) {
                     acc.pkgTotal++;
                     if (e.isSuccess()) acc.pkgSuccess++;
+                } else if (et.startsWith("DEPLOY_")) {
+                    acc.deployTotal++;
+                    if (e.isSuccess()) acc.deploySuccess++;
                 }
             }
             return acc;
@@ -93,6 +99,7 @@ public class PipelineHealthOperator {
             a.testTotal    += b.testTotal;    a.testSuccess   += b.testSuccess;
             a.sonarTotal   += b.sonarTotal;   a.sonarSuccess  += b.sonarSuccess;
             a.pkgTotal     += b.pkgTotal;     a.pkgSuccess    += b.pkgSuccess;
+            a.deployTotal  += b.deployTotal;  a.deploySuccess += b.deploySuccess;
             return a;
         }
     }
@@ -107,19 +114,21 @@ public class PipelineHealthOperator {
                             Iterable<HealthAcc> elems, Collector<MetricResult> out) {
             HealthAcc acc = elems.iterator().next();
 
-            double buildRate = rate(acc.buildSuccess, acc.buildTotal);
-            double testRate  = rate(acc.testSuccess,  acc.testTotal);
-            double sonarRate = rate(acc.sonarSuccess, acc.sonarTotal);
-            double pkgRate   = rate(acc.pkgSuccess,   acc.pkgTotal);
+            double buildRate  = rate(acc.buildSuccess,  acc.buildTotal);
+            double testRate   = rate(acc.testSuccess,   acc.testTotal);
+            double sonarRate  = rate(acc.sonarSuccess,  acc.sonarTotal);
+            double pkgRate    = rate(acc.pkgSuccess,    acc.pkgTotal);
+            double deployRate = rate(acc.deploySuccess, acc.deployTotal);
 
             // Weighted composite score
-            double score = (buildRate * 0.40)
-                         + (testRate  * 0.30)
-                         + (sonarRate * 0.20)
-                         + (pkgRate   * 0.10);
+            double score = (buildRate  * 0.35)
+                         + (testRate   * 0.25)
+                         + (sonarRate  * 0.15)
+                         + (pkgRate    * 0.10)
+                         + (deployRate * 0.15);
 
             long totalEvents = acc.buildTotal + acc.testTotal
-                             + acc.sonarTotal + acc.pkgTotal;
+                             + acc.sonarTotal + acc.pkgTotal + acc.deployTotal;
 
             MetricResult r = new MetricResult(
                     MetricResult.MetricType.PIPELINE_HEALTH_SCORE,
@@ -130,8 +139,8 @@ public class PipelineHealthOperator {
 
             // Attach breakdown as detail JSON for Grafana
             r.setDetail(String.format(
-                    "{\"build\":%.1f,\"test\":%.1f,\"sonar\":%.1f,\"package\":%.1f}",
-                    buildRate, testRate, sonarRate, pkgRate));
+                    "{\"build\":%.1f,\"test\":%.1f,\"sonar\":%.1f,\"package\":%.1f,\"deploy\":%.1f}",
+                    buildRate, testRate, sonarRate, pkgRate, deployRate));
             out.collect(r);
         }
 

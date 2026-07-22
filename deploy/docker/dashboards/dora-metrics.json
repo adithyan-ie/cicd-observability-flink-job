@@ -115,6 +115,22 @@
           "rawQuery": true
         }
       ]
+    },
+    {
+      "id": 7,
+      "title": "Deployment Frequency — Window History",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
+          "rawQuery": true
+        }
+      ]
     }
   ]
 }

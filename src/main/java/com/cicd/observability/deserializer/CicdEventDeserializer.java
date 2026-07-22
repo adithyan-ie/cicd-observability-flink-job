@@ -11,9 +11,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 
 /**
  * Deserialises the compact JSON produced by the Jenkins stageEvent() function.
@@ -35,8 +32,6 @@ public class CicdEventDeserializer implements DeserializationSchema<CicdEvent> {
 
     private static final long serialVersionUID = 1L;
     private static final Logger LOG = LoggerFactory.getLogger(CicdEventDeserializer.class);
-    private static final DateTimeFormatter TS_FMT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     private transient ObjectMapper mapper;
 
@@ -60,7 +55,7 @@ public class CicdEventDeserializer implements DeserializationSchema<CicdEvent> {
             // Parse ISO-8601 timestamp → epoch milliseconds for Flink watermark
             if (event.getEventTimestamp() != null && !event.getEventTimestamp().isEmpty()) {
                 try {
-                    event.setTimestampMs(LocalDateTime.parse(event.getEventTimestamp()).toInstant(ZoneOffset.UTC).toEpochMilli());
+                    event.setTimestampMs(Instant.parse(event.getEventTimestamp()).toEpochMilli());
                 } catch (Exception e) {
                     // Fall back to processing time
                     event.setTimestampMs(Instant.now().toEpochMilli());
