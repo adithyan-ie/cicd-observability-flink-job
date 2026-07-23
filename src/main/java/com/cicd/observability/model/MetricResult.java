@@ -11,11 +11,14 @@ public class MetricResult implements Serializable {
     public enum MetricType {
         // DORA
         DEPLOYMENT_FREQUENCY,
+        DEPLOYMENT_FREQUENCY_LIVE,
         LEAD_TIME_FOR_CHANGES,
         CHANGE_FAILURE_RATE,
+        CHANGE_FAILURE_RATE_LIVE,
         MEAN_TIME_TO_RECOVERY,
         // Health
         PIPELINE_HEALTH_SCORE,
+        PIPELINE_HEALTH_SCORE_LIVE,
         // Late events
         LATE_EVENT_DETECTED,
         LATE_EVENT_CORRECTED,
@@ -71,6 +74,7 @@ public class MetricResult implements Serializable {
                 if (value < 10080) return "Medium";
                 return "Low";
             case CHANGE_FAILURE_RATE:
+            case CHANGE_FAILURE_RATE_LIVE:
                 if (value <= 5)  return "Elite";
                 if (value <= 10) return "High";
                 if (value <= 15) return "Medium";
@@ -81,6 +85,7 @@ public class MetricResult implements Serializable {
                 if (value < 10080) return "Medium";
                 return "Low";
             case PIPELINE_HEALTH_SCORE:
+            case PIPELINE_HEALTH_SCORE_LIVE:
                 if (value >= 85) return "Elite";
                 if (value >= 70) return "High";
                 if (value >= 50) return "Medium";

@@ -175,6 +175,89 @@ public class DoraOperators {
         }
     }
 
+    // ── Live counter — same pattern as DeploymentFrequencyOperator's live
+    //    stream: no window, resets on the window's close boundary, drops
+    //    events that belong to an already-closed window instead of
+    //    miscounting them into the current one. ─────────────────────────
+
+    private static final String CFR_LIVE_WINDOW_MARKER =
+            LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
+
+    /**
+     * @param windowSize same bucket size as {@link #changeFailureRate}'s
+     *                   window (e.g. 7 days in production).
+     */
+    public static SingleOutputStreamOperator<MetricResult> changeFailureRateLive(
+            DataStream<CicdEvent> events, Time windowSize) {
+        return events
+                .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType())
+                          || "DEPLOY_FAILED".equals(e.getEventType()))
+                .keyBy(CicdEvent::getPipelineId)
+                .process(new LiveCfrCounter(windowSize.toMilliseconds()));
+    }
+
+    static class LiveCfrCounter extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
+
+        private final long windowMs;
+        private transient ValueState<Long> total;
+        private transient ValueState<Long> failed;
+        private transient ValueState<Long> windowEnd;
+
+        LiveCfrCounter(long windowMs) { this.windowMs = windowMs; }
+
+        @Override
+        public void open(Configuration cfg) {
+            total     = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-total",  Types.LONG));
+            failed    = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-failed", Types.LONG));
+            windowEnd = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-window-end", Types.LONG));
+        }
+
+        @Override
+        public void processElement(CicdEvent event, Context ctx, Collector<MetricResult> out) throws Exception {
+            long ts = event.getTimestampMs();
+            Long currentWindowEnd = windowEnd.value();
+
+            if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
+                // Late event for an already-closed window — the live tile
+                // only reflects the window currently open; changeFailureRate()
+                // (with allowedLateness) is the source of truth for corrections.
+                return;
+            }
+
+            if (currentWindowEnd == null || ts >= currentWindowEnd) {
+                total.clear();
+                failed.clear();
+                long nextWindowEnd = ((ts / windowMs) + 1) * windowMs;
+                windowEnd.update(nextWindowEnd);
+                ctx.timerService().registerEventTimeTimer(nextWindowEnd - 1);
+            }
+
+            long totalCount = (total.value() == null ? 0L : total.value()) + 1;
+            total.update(totalCount);
+
+            long failedCount = failed.value() == null ? 0L : failed.value();
+            if ("DEPLOY_FAILED".equals(event.getEventType()) || event.isFailure()) {
+                failedCount++;
+                failed.update(failedCount);
+            }
+
+            double cfr = failedCount * 100.0 / totalCount;
+
+            out.collect(new MetricResult(
+                    MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE,
+                    event.getPipelineId(), event.getServiceName(),
+                    CFR_LIVE_WINDOW_MARKER, CFR_LIVE_WINDOW_MARKER,
+                    cfr, totalCount));
+        }
+
+        @Override
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
+            // Window closed — next event starts a fresh tally.
+            total.clear();
+            failed.clear();
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // #4 — Mean Time to Recovery (MTTR)
     // ══════════════════════════════════════════════════════════════════

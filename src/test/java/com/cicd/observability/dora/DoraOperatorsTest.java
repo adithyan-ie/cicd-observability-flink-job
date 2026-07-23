@@ -121,6 +121,212 @@ public class DoraOperatorsTest {
                 results.isEmpty());
     }
 
+    @Test
+    public void testDeploymentFrequency_historyShowsDistinctCountPerWindow() throws Exception {
+        // Window size 10s. 3 deploys land in the first window, 2 in the
+        // next one (base+15s/+16s are guaranteed to be in a later window
+        // since the offset exceeds the 10s window size).
+        List<CicdEvent> events = List.of(
+                event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
+                event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
+                event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(2)),
+                event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15)),
+                event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(16))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DeploymentFrequencyOperator
+                .compute(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        results.sort(java.util.Comparator.comparing(MetricResult::getWindowStartMs));
+        assertEquals("Expected one history row per distinct window", 2, results.size());
+        assertEquals("First window should count only its own 3 deploys",
+                3.0, results.get(0).getValue(), 0.0001);
+        assertEquals("Second window should count only its own 2 deploys, not 5",
+                2.0, results.get(1).getValue(), 0.0001);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Live deployment counter (separate from the historical window above)
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    public void testLiveDeployCounter_incrementsPerEventWithinWindow() throws Exception {
+        List<CicdEvent> events = List.of(
+                event("pipe-live-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
+                event("pipe-live-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
+                event("pipe-live-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(2))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DeploymentFrequencyOperator.computeLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertEquals(3, results.size());
+        assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE, results.get(0).getMetricType());
+        assertEquals(1L, results.get(0).getSampleCount());
+        assertEquals(2L, results.get(1).getSampleCount());
+        assertEquals(3L, results.get(2).getSampleCount());
+    }
+
+    @Test
+    public void testLiveDeployCounter_resetsWhenWindowCloses() throws Exception {
+        // Window size 10s. First two events land in the same window; the
+        // third is 15s later — past the boundary — so the counter must
+        // restart at 1 instead of continuing to 3.
+        List<CicdEvent> events = List.of(
+                event("pipe-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
+                event("pipe-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
+                event("pipe-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DeploymentFrequencyOperator.computeLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertEquals(3, results.size());
+        assertEquals(1L, results.get(0).getSampleCount());
+        assertEquals(2L, results.get(1).getSampleCount());
+        assertEquals("Counter should reset to 1 once the window closes, not continue to 3",
+                1L, results.get(2).getSampleCount());
+    }
+
+    @Test
+    public void testLiveDeployCounter_dropsLateEventsInsteadOfMiscountingIntoNewWindow() throws Exception {
+        // Window size 10s. Event at +15s opens window 2 (count=1). A late
+        // event at +5s (belongs to window 1, already closed) arrives next —
+        // it must be dropped, not added to window 2's count as a 2nd deploy.
+        List<CicdEvent> events = List.of(
+                event("pipe-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15)),
+                event("pipe-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(5)),
+                event("pipe-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(16))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DeploymentFrequencyOperator.computeLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        // The late event (+5s) should have been silently dropped — only
+        // the two window-2 events (+15s, +16s) produce output.
+        assertEquals("Late event should be dropped, not emitted at all", 2, results.size());
+        assertEquals(1L, results.get(0).getSampleCount());
+        assertEquals("Late event must not be added to window 2's count",
+                2L, results.get(1).getSampleCount());
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Live Change Failure Rate (same pattern as the live deploy counter)
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    public void testLiveCfr_updatesRatePerEventWithinWindow() throws Exception {
+        List<CicdEvent> events = List.of(
+                event("pipe-cfr-live-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
+                event("pipe-cfr-live-1", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(1))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DoraOperators.changeFailureRateLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertEquals(2, results.size());
+        assertEquals(MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE, results.get(0).getMetricType());
+        assertEquals("1 success, 0 failures so far = 0%", 0.0, results.get(0).getValue(), 0.0001);
+        assertEquals("1 success, 1 failure so far = 50%", 50.0, results.get(1).getValue(), 0.0001);
+        assertEquals(1L, results.get(0).getSampleCount());
+        assertEquals(2L, results.get(1).getSampleCount());
+    }
+
+    @Test
+    public void testLiveCfr_resetsWhenWindowCloses() throws Exception {
+        // Window size 10s. First window: 1 failure out of 2 = 50%. Third
+        // event is 15s later — past the boundary — so the tally must
+        // restart (1 failure out of 1 = 100%), not accumulate to 2/3.
+        List<CicdEvent> events = List.of(
+                event("pipe-cfr-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
+                event("pipe-cfr-live-2", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(1)),
+                event("pipe-cfr-live-2", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(15))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DoraOperators.changeFailureRateLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertEquals(3, results.size());
+        assertEquals(50.0, results.get(1).getValue(), 0.0001);
+        assertEquals("New window should restart at 1 failure / 1 total = 100%, not 2/3",
+                100.0, results.get(2).getValue(), 0.0001);
+        assertEquals(1L, results.get(2).getSampleCount());
+    }
+
+    @Test
+    public void testLiveCfr_dropsLateEventsInsteadOfMiscountingIntoNewWindow() throws Exception {
+        List<CicdEvent> events = List.of(
+                event("pipe-cfr-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15)),
+                event("pipe-cfr-live-3", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(5)), // late
+                event("pipe-cfr-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(16))
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        DataStream<CicdEvent> stream = env.fromCollection(events)
+                .assignTimestampsAndWatermarks(
+                        WatermarkStrategy
+                                .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
+                                .withTimestampAssigner((event, ts) -> event.getTimestampMs()));
+
+        DoraOperators.changeFailureRateLive(stream, Time.seconds(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertEquals("Late event should be dropped, not emitted at all", 2, results.size());
+        assertEquals("Late failure must not be folded into window 2's rate",
+                0.0, results.get(1).getValue(), 0.0001);
+        assertEquals(2L, results.get(1).getSampleCount());
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // Lead Time for Changes
     // ══════════════════════════════════════════════════════════════════

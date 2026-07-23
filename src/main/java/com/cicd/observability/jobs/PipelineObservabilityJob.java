@@ -72,6 +72,13 @@ public class PipelineObservabilityJob {
                 deployFreq.getSideOutput(DeploymentFrequencyOperator.TRULY_LATE_TAG);
         auditTrulyLateEvents(deployTrulyLate, "dora-deploy-freq");
 
+        // Live counter for the real-time dashboard tile — separate from the
+        // historical daily window above, so it updates instantly per deploy
+        // without forcing the window to re-fire.
+        DataStream<MetricResult> deployFreqLive =
+                DeploymentFrequencyOperator.computeLive(doraStream, Time.days(1));
+        sinkMetric(deployFreqLive, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq-live");
+
         DataStream<MetricResult> leadTime = DoraOperators.leadTime(doraStream);
         sinkMetric(leadTime, FlinkConfig.TOPIC_METRICS, "dora-lead-time");
 
@@ -83,6 +90,10 @@ public class PipelineObservabilityJob {
                 cfr.getSideOutput(DoraOperators.CFR_TRULY_LATE_TAG);
         auditTrulyLateEvents(cfrTrulyLate, "dora-cfr");
 
+        DataStream<MetricResult> cfrLive =
+                DoraOperators.changeFailureRateLive(doraStream, Time.days(7));
+        sinkMetric(cfrLive, FlinkConfig.TOPIC_METRICS, "dora-cfr-live");
+
         DataStream<MetricResult> mttr = DoraOperators.mttr(doraStream);
         sinkMetric(mttr, FlinkConfig.TOPIC_METRICS, "dora-mttr");
 
@@ -93,6 +104,12 @@ public class PipelineObservabilityJob {
         SingleOutputStreamOperator<MetricResult> health =
                 PipelineHealthOperator.compute(healthStream);
         sinkMetric(health, FlinkConfig.TOPIC_HEALTH, "health-score");
+
+        DataStream<MetricResult> healthLive =
+                PipelineHealthOperator.computeLive(healthStream, Time.days(1));
+        DataStream<MetricResult> healthLiveChanged =
+                PipelineHealthOperator.filterChanged(healthLive);
+        sinkMetric(healthLiveChanged, FlinkConfig.TOPIC_HEALTH, "health-score-live");
 
         DataStream<CicdEvent> healthTrulyLate =
                 health.getSideOutput(PipelineHealthOperator.TRULY_LATE_TAG);

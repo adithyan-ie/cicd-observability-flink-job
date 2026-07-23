@@ -109,8 +109,13 @@ public class FlinkConfig {
 
         CheckpointConfig cpCfg = env.getCheckpointConfig();
         cpCfg.setMinPauseBetweenCheckpoints(5_000);
-        cpCfg.setCheckpointTimeout(60_000);
+        cpCfg.setCheckpointTimeout(120_000);
         cpCfg.setMaxConcurrentCheckpoints(1);
+        // Default is 0 — a single slow checkpoint (e.g. during Kafka backlog
+        // catch-up, when many window firings burst through the synchronous
+        // Postgres sink) would otherwise trigger a full job restart, which
+        // replays the backlog and risks repeating the same slow checkpoint.
+        cpCfg.setTolerableCheckpointFailureNumber(3);
 
         // Retain the last checkpoint on job cancellation so state is not lost
         cpCfg.setExternalizedCheckpointCleanup(

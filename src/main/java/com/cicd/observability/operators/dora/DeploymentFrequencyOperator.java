@@ -3,9 +3,12 @@ package com.cicd.observability.operators.dora;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
-import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
@@ -15,25 +18,20 @@ import org.apache.flink.util.OutputTag;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 
 /**
  * DORA Metric #1 — Deployment Frequency
  *
- * Flink features used:
- *   - filter()                     → keep only DEPLOY_SUCCESS events
- *   - keyBy(pipelineId)            → one state machine per pipeline
- *   - TumblingEventTimeWindows(1d) → count per day, driven by watermark
- *   - AggregateFunction            → incremental count (memory-efficient)
- *   - ProcessWindowFunction        → access window metadata (start/end ms)
- *   - .allowedLateness(1h)         → a DEPLOY_SUCCESS event that arrives after
- *     the window has fired (but within the grace period) re-triggers THIS
- *     window and re-emits an updated count for the same window. Postgres
- *     upserts on (metric_type, pipeline_id, window_start_ms, window_end_ms),
- *     so the correction overwrites the earlier row instead of duplicating it.
- *   - .sideOutputLateData(TRULY_LATE_TAG) → events beyond the grace period,
- *     for audit instead of silent drop.
+ * Two independent streams, computed and sunk separately:
+ *   - {@link #compute}     → historical, DORA-accurate daily count (tumbling
+ *     window, fires once per day + late corrections).
+ *   - {@link #computeLive} → real-time counter for the live dashboard tile
+ *     (no windowing — emits immediately on every deploy).
+ *
+ * Keeping these separate means the live tile updates instantly without
+ * forcing the historical window to re-fire repeatedly (which previously
+ * caused checkpoint-timeout instability when replaying a Kafka backlog).
  */
 public class DeploymentFrequencyOperator {
 
@@ -43,20 +41,18 @@ public class DeploymentFrequencyOperator {
 
     private static final Time ALLOWED_LATENESS = Time.hours(1);
 
+    // ════════════════════════════════════════════════════════════════
+    // Historical metric — 1-day tumbling window, default EventTimeTrigger
+    // ════════════════════════════════════════════════════════════════
+
     public static SingleOutputStreamOperator<MetricResult> compute(
             DataStream<CicdEvent> events, Time windowSize) {
 
         double windowDays = windowSize.toMilliseconds() / (double)(86_400_000L);
         return events
                 .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType()))
-                .map(e -> {
-                            System.out.println(e.getEventType());
-                            System.out.println("event time:"+ e.getEventTimestamp());
-
-
-                            return e;})
                 .keyBy(CicdEvent::getPipelineId)
-                .window(SlidingEventTimeWindows.of(windowSize, Time.minutes(1)))
+                .window(TumblingEventTimeWindows.of(windowSize))
                 .allowedLateness(ALLOWED_LATENESS)
                 .sideOutputLateData(TRULY_LATE_TAG)
                 .aggregate(new DeployCountAgg(), new DeployFreqWindowFn(windowDays));
@@ -106,13 +102,6 @@ public class DeploymentFrequencyOperator {
             DeployCount acc = elements.iterator().next();
             double deploysPerDayRate = acc.count / windowDays;
 
-            System.out.println(
-                    "Window: " +
-                            Instant.ofEpochMilli(ctx.window().getStart()) +
-                            " -> " +
-                            Instant.ofEpochMilli(ctx.window().getEnd()) +
-                            " count=" + acc.count
-            );
             MetricResult r = new MetricResult(
                     MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
                     pipelineId, acc.serviceName,
@@ -120,6 +109,92 @@ public class DeploymentFrequencyOperator {
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
                     acc.count, acc.count);
             out.collect(r);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Live metric — no window, emits on every deploy event
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Sentinel window_start/window_end for the live metric row, so every
+     * emission for the same pipeline shares one Postgres row (upserted in
+     * place via the same unique index used by the windowed metric) instead
+     * of inserting a new row per deploy.
+     */
+    private static final String LIVE_WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
+
+    /**
+     * @param windowSize same bucket size as the historical {@link #compute}
+     *                   window (e.g. 1 day in production) — the live counter
+     *                   resets each time event-time crosses one of these
+     *                   boundaries, so "live count" always means "count so
+     *                   far in the window that's currently open."
+     */
+    public static SingleOutputStreamOperator<MetricResult> computeLive(
+            DataStream<CicdEvent> events, Time windowSize) {
+        return events
+                .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType()))
+                .keyBy(CicdEvent::getPipelineId)
+                .process(new LiveDeployCounter(windowSize.toMilliseconds()));
+    }
+
+    static class LiveDeployCounter extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
+
+        private final long windowMs;
+        private transient ValueState<Long> counter;
+        private transient ValueState<Long> windowEnd;
+
+        LiveDeployCounter(long windowMs) { this.windowMs = windowMs; }
+
+        @Override
+        public void open(Configuration parameters) {
+            counter = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("live-deploy-count", Long.class));
+            windowEnd = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("live-deploy-window-end", Long.class));
+        }
+
+        @Override
+        public void processElement(CicdEvent event, Context ctx, Collector<MetricResult> out) throws Exception {
+            long ts = event.getTimestampMs();
+            Long currentWindowEnd = windowEnd.value();
+
+            if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
+                // Late event belonging to a window that has already closed.
+                // The live tile only reflects the window currently open —
+                // counting this here would silently attribute it to the
+                // wrong window. The historical stream (compute()), which
+                // has allowedLateness, is the source of truth for any
+                // retroactive correction.
+                return;
+            }
+
+            if (currentWindowEnd == null || ts >= currentWindowEnd) {
+                // First event for this key, or this event belongs to a later
+                // window than the one currently being counted (covers the
+                // case where the close-timer below hasn't fired yet, e.g.
+                // several windows are skipped at once).
+                counter.clear();
+                long nextWindowEnd = ((ts / windowMs) + 1) * windowMs;
+                windowEnd.update(nextWindowEnd);
+                ctx.timerService().registerEventTimeTimer(nextWindowEnd - 1);
+            }
+
+            long count = (counter.value() == null ? 0L : counter.value()) + 1;
+            counter.update(count);
+
+            out.collect(new MetricResult(
+                    MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE,
+                    event.getPipelineId(), event.getServiceName(),
+                    LIVE_WINDOW_MARKER, LIVE_WINDOW_MARKER,
+                    count, count));
+        }
+
+        @Override
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
+            // Window closed — next deploy starts a fresh count.
+            counter.clear();
         }
     }
 }
