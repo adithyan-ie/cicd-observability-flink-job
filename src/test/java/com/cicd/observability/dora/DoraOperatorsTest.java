@@ -177,11 +177,16 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals(3, results.size());
+        // The window is still open when the bounded stream ends, so Flink's
+        // final watermark flush fires its close-timer too, appending one
+        // trailing reset (sampleCount=0) after the three real increments.
+        assertEquals(4, results.size());
         assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE, results.get(0).getMetricType());
         assertEquals(1L, results.get(0).getSampleCount());
         assertEquals(2L, results.get(1).getSampleCount());
         assertEquals(3L, results.get(2).getSampleCount());
+        assertEquals("Trailing reset from end-of-stream window close",
+                0L, results.get(3).getSampleCount());
     }
 
     @Test
@@ -206,11 +211,21 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals(3, results.size());
-        assertEquals(1L, results.get(0).getSampleCount());
-        assertEquals(2L, results.get(1).getSampleCount());
+        // Real per-event increments (sampleCount>0) vs. close-timer resets
+        // (sampleCount==0, one per window that closes — window 1 closes
+        // mid-stream, window 2 closes at the final end-of-stream watermark).
+        // Split rather than assert on raw indices/size, since the exact
+        // interleaving of the two window-close timers isn't guaranteed.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
+
+        assertEquals(3, increments.size());
+        assertEquals(1L, increments.get(0).getSampleCount());
+        assertEquals(2L, increments.get(1).getSampleCount());
         assertEquals("Counter should reset to 1 once the window closes, not continue to 3",
-                1L, results.get(2).getSampleCount());
+                1L, increments.get(2).getSampleCount());
+        assertEquals("One reset per window that closed (window 1 mid-stream, window 2 at end-of-stream)",
+                2, resets.size());
     }
 
     @Test
@@ -236,11 +251,14 @@ public class DoraOperatorsTest {
                 .forEachRemaining(results::add);
 
         // The late event (+5s) should have been silently dropped — only
-        // the two window-2 events (+15s, +16s) produce output.
-        assertEquals("Late event should be dropped, not emitted at all", 2, results.size());
-        assertEquals(1L, results.get(0).getSampleCount());
+        // the two window-2 events (+15s, +16s) produce increments. Window 2
+        // is still open at end-of-stream, so one trailing reset also fires.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
+        assertEquals(1L, increments.get(0).getSampleCount());
         assertEquals("Late event must not be added to window 2's count",
-                2L, results.get(1).getSampleCount());
+                2L, increments.get(1).getSampleCount());
+        assertEquals(3, results.size());
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -265,12 +283,16 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals(2, results.size());
-        assertEquals(MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE, results.get(0).getMetricType());
-        assertEquals("1 success, 0 failures so far = 0%", 0.0, results.get(0).getValue(), 0.0001);
-        assertEquals("1 success, 1 failure so far = 50%", 50.0, results.get(1).getValue(), 0.0001);
-        assertEquals(1L, results.get(0).getSampleCount());
-        assertEquals(2L, results.get(1).getSampleCount());
+        // Window is still open at end-of-stream, so one trailing reset
+        // (sampleCount=0) follows the two real increments.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        assertEquals(2, increments.size());
+        assertEquals(MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE, increments.get(0).getMetricType());
+        assertEquals("1 success, 0 failures so far = 0%", 0.0, increments.get(0).getValue(), 0.0001);
+        assertEquals("1 success, 1 failure so far = 50%", 50.0, increments.get(1).getValue(), 0.0001);
+        assertEquals(1L, increments.get(0).getSampleCount());
+        assertEquals(2L, increments.get(1).getSampleCount());
+        assertEquals(3, results.size());
     }
 
     @Test
@@ -295,11 +317,17 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals(3, results.size());
-        assertEquals(50.0, results.get(1).getValue(), 0.0001);
+        // Real increments vs. close-timer resets (window 1 closes
+        // mid-stream, window 2 closes at the final end-of-stream watermark).
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
+
+        assertEquals(3, increments.size());
+        assertEquals(50.0, increments.get(1).getValue(), 0.0001);
         assertEquals("New window should restart at 1 failure / 1 total = 100%, not 2/3",
-                100.0, results.get(2).getValue(), 0.0001);
-        assertEquals(1L, results.get(2).getSampleCount());
+                100.0, increments.get(2).getValue(), 0.0001);
+        assertEquals(1L, increments.get(2).getSampleCount());
+        assertEquals("One reset per window that closed", 2, resets.size());
     }
 
     @Test
@@ -321,10 +349,14 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals("Late event should be dropped, not emitted at all", 2, results.size());
+        // Window 2 is still open at end-of-stream, so one trailing reset
+        // (sampleCount=0) follows the two real increments.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
         assertEquals("Late failure must not be folded into window 2's rate",
-                0.0, results.get(1).getValue(), 0.0001);
-        assertEquals(2L, results.get(1).getSampleCount());
+                0.0, increments.get(1).getValue(), 0.0001);
+        assertEquals(2L, increments.get(1).getSampleCount());
+        assertEquals(3, results.size());
     }
 
     // ══════════════════════════════════════════════════════════════════

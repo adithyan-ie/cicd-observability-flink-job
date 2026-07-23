@@ -202,6 +202,7 @@ public class DoraOperators {
         private transient ValueState<Long> total;
         private transient ValueState<Long> failed;
         private transient ValueState<Long> windowEnd;
+        private transient ValueState<String> serviceName;
 
         LiveCfrCounter(long windowMs) { this.windowMs = windowMs; }
 
@@ -210,6 +211,7 @@ public class DoraOperators {
             total     = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-total",  Types.LONG));
             failed    = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-failed", Types.LONG));
             windowEnd = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-window-end", Types.LONG));
+            serviceName = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-service-name", Types.STRING));
         }
 
         @Override
@@ -242,6 +244,7 @@ public class DoraOperators {
             }
 
             double cfr = failedCount * 100.0 / totalCount;
+            serviceName.update(event.getServiceName());
 
             out.collect(new MetricResult(
                     MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE,
@@ -251,10 +254,17 @@ public class DoraOperators {
         }
 
         @Override
-        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
-            // Window closed — next event starts a fresh tally.
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
+            // Window closed — emit the reset itself so Postgres/Grafana show
+            // 0% immediately, instead of the last window's rate sitting
+            // there stale until the next deploy/failure happens.
             total.clear();
             failed.clear();
+            out.collect(new MetricResult(
+                    MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE,
+                    ctx.getCurrentKey(), serviceName.value(),
+                    CFR_LIVE_WINDOW_MARKER, CFR_LIVE_WINDOW_MARKER,
+                    0.0, 0));
         }
     }
 

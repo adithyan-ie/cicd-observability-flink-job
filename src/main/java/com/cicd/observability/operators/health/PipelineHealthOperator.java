@@ -61,7 +61,7 @@ public class PipelineHealthOperator {
     public static SingleOutputStreamOperator<MetricResult> compute(DataStream<CicdEvent> events) {
         return events
                 .keyBy(CicdEvent::getPipelineId)
-                .window(TumblingEventTimeWindows.of(Time.days(1)))
+                .window(TumblingEventTimeWindows.of(Time.minutes(10)))
                 .allowedLateness(ALLOWED_LATENESS)
                 .sideOutputLateData(TRULY_LATE_TAG)
                 .aggregate(new HealthAgg(), new HealthWindowFn());
@@ -277,9 +277,18 @@ public class PipelineHealthOperator {
         }
 
         @Override
-        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
-            // Window closed — next event starts a fresh tally.
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
+            // Window closed — emit the reset itself so Postgres/Grafana show
+            // a fresh score immediately, instead of the last window's score
+            // sitting there stale until the next event happens.
+            HealthAcc previous = acc.value();
+            String lastServiceName = previous == null ? "" : previous.serviceName;
             acc.clear();
+
+            HealthAcc fresh = new HealthAcc();
+            fresh.serviceName = lastServiceName;
+            out.collect(buildResult(ctx.getCurrentKey(), fresh, MetricResult.MetricType.PIPELINE_HEALTH_SCORE_LIVE,
+                    LIVE_WINDOW_MARKER, LIVE_WINDOW_MARKER));
         }
     }
 }

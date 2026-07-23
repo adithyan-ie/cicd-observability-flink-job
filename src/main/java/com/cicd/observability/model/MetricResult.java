@@ -64,6 +64,7 @@ public class MetricResult implements Serializable {
     private static String classifyBand(MetricType type, double value) {
         switch (type) {
             case DEPLOYMENT_FREQUENCY:
+            case DEPLOYMENT_FREQUENCY_LIVE:
                 if (value >= 1.0)    return "Elite";
                 if (value >= 1.0/7)  return "High";
                 if (value >= 1.0/30) return "Medium";

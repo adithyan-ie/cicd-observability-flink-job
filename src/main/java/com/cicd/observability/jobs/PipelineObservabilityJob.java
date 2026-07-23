@@ -64,7 +64,7 @@ public class PipelineObservabilityJob {
         // ════════════════════════════════════════════════════════════════
 
         SingleOutputStreamOperator<MetricResult> deployFreq =
-                DeploymentFrequencyOperator.compute(doraStream, Time.days(1));
+                DeploymentFrequencyOperator.compute(doraStream, Time.minutes(10));
         sinkMetric(deployFreq, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq");
 
         // Deploy events beyond the allowed-lateness grace period → alert table only (no Kafka)
@@ -76,7 +76,7 @@ public class PipelineObservabilityJob {
         // historical daily window above, so it updates instantly per deploy
         // without forcing the window to re-fire.
         DataStream<MetricResult> deployFreqLive =
-                DeploymentFrequencyOperator.computeLive(doraStream, Time.days(1));
+                DeploymentFrequencyOperator.computeLive(doraStream, Time.minutes(10));
         sinkMetric(deployFreqLive, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq-live");
 
         DataStream<MetricResult> leadTime = DoraOperators.leadTime(doraStream);
@@ -106,7 +106,7 @@ public class PipelineObservabilityJob {
         sinkMetric(health, FlinkConfig.TOPIC_HEALTH, "health-score");
 
         DataStream<MetricResult> healthLive =
-                PipelineHealthOperator.computeLive(healthStream, Time.days(1));
+                PipelineHealthOperator.computeLive(healthStream, Time.minutes(10));
         DataStream<MetricResult> healthLiveChanged =
                 PipelineHealthOperator.filterChanged(healthLive);
         sinkMetric(healthLiveChanged, FlinkConfig.TOPIC_HEALTH, "health-score-live");

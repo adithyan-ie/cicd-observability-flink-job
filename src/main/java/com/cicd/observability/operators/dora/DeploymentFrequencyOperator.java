@@ -144,6 +144,7 @@ public class DeploymentFrequencyOperator {
         private final long windowMs;
         private transient ValueState<Long> counter;
         private transient ValueState<Long> windowEnd;
+        private transient ValueState<String> serviceName;
 
         LiveDeployCounter(long windowMs) { this.windowMs = windowMs; }
 
@@ -153,6 +154,8 @@ public class DeploymentFrequencyOperator {
                     new ValueStateDescriptor<>("live-deploy-count", Long.class));
             windowEnd = getRuntimeContext().getState(
                     new ValueStateDescriptor<>("live-deploy-window-end", Long.class));
+            serviceName = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("live-deploy-service-name", String.class));
         }
 
         @Override
@@ -183,6 +186,7 @@ public class DeploymentFrequencyOperator {
 
             long count = (counter.value() == null ? 0L : counter.value()) + 1;
             counter.update(count);
+            serviceName.update(event.getServiceName());
 
             out.collect(new MetricResult(
                     MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE,
@@ -192,9 +196,16 @@ public class DeploymentFrequencyOperator {
         }
 
         @Override
-        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
-            // Window closed — next deploy starts a fresh count.
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
+            // Window closed — emit the reset itself so Postgres/Grafana show
+            // 0 immediately, instead of the last window's count sitting
+            // there stale until the next deploy happens.
             counter.clear();
+            out.collect(new MetricResult(
+                    MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE,
+                    ctx.getCurrentKey(), serviceName.value(),
+                    LIVE_WINDOW_MARKER, LIVE_WINDOW_MARKER,
+                    0, 0));
         }
     }
 }

@@ -181,12 +181,16 @@ public class PipelineHealthOperatorTest {
                 .forEachRemaining(results::add);
 
         // score = buildRate*0.35 + (100 for the other 4 categories, no events yet)
-        assertEquals(2, results.size());
-        assertEquals(MetricResult.MetricType.PIPELINE_HEALTH_SCORE_LIVE, results.get(0).getMetricType());
+        // Window is still open at end-of-stream, so a trailing reset
+        // (sampleCount=0) follows the two real increments.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        assertEquals(2, increments.size());
+        assertEquals(MetricResult.MetricType.PIPELINE_HEALTH_SCORE_LIVE, increments.get(0).getMetricType());
         assertEquals("1/1 build success = 100% build rate -> full score",
-                100.0, results.get(0).getValue(), 0.01);
+                100.0, increments.get(0).getValue(), 0.01);
         assertEquals("1/2 build success = 50% build rate -> 82.5 composite",
-                82.5, results.get(1).getValue(), 0.01);
+                82.5, increments.get(1).getValue(), 0.01);
+        assertEquals(3, results.size());
     }
 
     @Test
@@ -206,11 +210,17 @@ public class PipelineHealthOperatorTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals(3, results.size());
-        assertEquals(82.5, results.get(1).getValue(), 0.01);
+        // Real increments vs. close-timer resets (window 1 closes
+        // mid-stream, window 2 closes at the final end-of-stream watermark).
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
+
+        assertEquals(3, increments.size());
+        assertEquals(82.5, increments.get(1).getValue(), 0.01);
         assertEquals("New window should restart clean (100), not carry over the failure",
-                100.0, results.get(2).getValue(), 0.01);
-        assertEquals(1L, results.get(2).getSampleCount());
+                100.0, increments.get(2).getValue(), 0.01);
+        assertEquals(1L, increments.get(2).getSampleCount());
+        assertEquals("One reset per window that closed", 2, resets.size());
     }
 
     @Test
@@ -227,9 +237,13 @@ public class PipelineHealthOperatorTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        assertEquals("Late event should be dropped, not emitted at all", 2, results.size());
+        // Window 2 is still open at end-of-stream, so one trailing reset
+        // (sampleCount=0) follows the two real increments.
+        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
+        assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
         assertEquals("Late failure must not be folded into window 2's score",
-                100.0, results.get(1).getValue(), 0.01);
-        assertEquals(2L, results.get(1).getSampleCount());
+                100.0, increments.get(1).getValue(), 0.01);
+        assertEquals(2L, increments.get(1).getSampleCount());
+        assertEquals(3, results.size());
     }
 }
