@@ -47,7 +47,6 @@ public class DeploymentFrequencyOperator {
             DataStream<CicdEvent> events, Time windowSize) {
 
         double windowDays = windowSize.toMilliseconds() / (double)(86_400_000L);
-        Long slidingTime = Long.parseLong(String.valueOf(windowDays));
         return events
                 .filter(e -> "DEPLOY_SUCCESS".equals(e.getEventType()))
                 .map(e -> {
@@ -57,7 +56,7 @@ public class DeploymentFrequencyOperator {
 
                             return e;})
                 .keyBy(CicdEvent::getPipelineId)
-                .window(SlidingEventTimeWindows.of(Time.days(slidingTime),Time.minutes(1)))
+                .window(SlidingEventTimeWindows.of(windowSize, Time.minutes(1)))
                 .allowedLateness(ALLOWED_LATENESS)
                 .sideOutputLateData(TRULY_LATE_TAG)
                 .aggregate(new DeployCountAgg(), new DeployFreqWindowFn(windowDays));

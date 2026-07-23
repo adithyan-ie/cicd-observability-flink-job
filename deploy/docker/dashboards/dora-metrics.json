@@ -131,6 +131,22 @@
           "rawQuery": true
         }
       ]
+    },
+    {
+      "id": 8,
+      "title": "Truly-Late Events — Audit (per metric, per window)",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, metric_type AS source_metric, pipeline_id, service_name, value AS late_event_count, inserted_at AS computed_at FROM cicd_metrics WHERE metric_type IN ('DEPLOYMENT_FREQUENCY_LATE_EVENTS', 'CHANGE_FAILURE_RATE_LATE_EVENTS', 'PIPELINE_HEALTH_SCORE_LATE_EVENTS') ORDER BY window_end_ms DESC LIMIT 20",
+          "rawQuery": true
+        }
+      ]
     }
   ]
 }

@@ -41,7 +41,7 @@ import java.time.ZoneOffset;
  */
 public class LateEventOperator {
 
-    private static final Time AUDIT_WINDOW = Time.minutes(1);
+    private static final Time AUDIT_WINDOW = Time.minutes(10);
 
     /**
      * @param trulyLateEvents a metric operator's TRULY_LATE_TAG side output
