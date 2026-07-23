@@ -26,6 +26,9 @@ CREATE INDEX IF NOT EXISTS idx_cicd_metrics_service
 
 -- One row per computed window: replays / job restarts recompute the same
 -- (metric_type, pipeline_id, window) and should overwrite, not duplicate.
+-- Late-event audit rows use their own metric_type per source metric (e.g.
+-- DEPLOYMENT_FREQUENCY_LATE_EVENTS), so this key still holds without any
+-- extra column — see LateEventOperator.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_cicd_metrics_window
     ON cicd_metrics (metric_type, pipeline_id, window_start_ms, window_end_ms);
 

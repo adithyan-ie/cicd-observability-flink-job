@@ -93,6 +93,9 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
             case FAILURE_PATTERN_DETECTED:
             case PATTERN_TIMEOUT:
             case LATE_EVENT_DETECTED:
+            case DEPLOYMENT_FREQUENCY_LATE_EVENTS:
+            case CHANGE_FAILURE_RATE_LATE_EVENTS:
+            case PIPELINE_HEALTH_SCORE_LATE_EVENTS:
                 return true;   // Always annotate discrete alerts
             case PIPELINE_HEALTH_SCORE:
                 return "Low".equals(metric.getPerformanceBand())

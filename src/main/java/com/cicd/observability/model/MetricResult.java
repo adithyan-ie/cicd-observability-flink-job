@@ -19,6 +19,12 @@ public class MetricResult implements Serializable {
         // Late events
         LATE_EVENT_DETECTED,
         LATE_EVENT_CORRECTED,
+        // Late-event audit counts, one per windowed metric that has its own
+        // allowedLateness — metric_type alone disambiguates these rows from
+        // each other and from the real metric, so no extra column is needed.
+        DEPLOYMENT_FREQUENCY_LATE_EVENTS,
+        CHANGE_FAILURE_RATE_LATE_EVENTS,
+        PIPELINE_HEALTH_SCORE_LATE_EVENTS,
         // CEP
         FAILURE_PATTERN_DETECTED,
         PATTERN_TIMEOUT

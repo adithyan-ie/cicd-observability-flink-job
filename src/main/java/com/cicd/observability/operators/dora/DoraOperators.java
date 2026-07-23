@@ -10,12 +10,14 @@ import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -113,7 +115,13 @@ public class DoraOperators {
     // #3 — Change Failure Rate
     // ══════════════════════════════════════════════════════════════════
 
-    public static DataStream<MetricResult> changeFailureRate(
+    /** Deploy events beyond the allowed-lateness grace period. */
+    public static final OutputTag<CicdEvent> CFR_TRULY_LATE_TAG =
+            new OutputTag<CicdEvent>("cfr-truly-late-events") {};
+
+    private static final Time CFR_ALLOWED_LATENESS = Time.hours(1);
+
+    public static SingleOutputStreamOperator<MetricResult> changeFailureRate(
             DataStream<CicdEvent> events, Time windowSize) {
 
         return events
@@ -121,6 +129,8 @@ public class DoraOperators {
                           || "DEPLOY_FAILED".equals(e.getEventType()))
                 .keyBy(CicdEvent::getPipelineId)
                 .window(TumblingEventTimeWindows.of(windowSize))
+                .allowedLateness(CFR_ALLOWED_LATENESS)
+                .sideOutputLateData(CFR_TRULY_LATE_TAG)
                 .aggregate(new CfrAgg(), new CfrWindowFn());
     }
 

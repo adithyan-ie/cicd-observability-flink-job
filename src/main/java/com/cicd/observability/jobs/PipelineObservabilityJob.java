@@ -57,23 +57,31 @@ public class PipelineObservabilityJob {
 
         DataStream<CicdEvent> doraStream   = routedStream.getSideOutput(EventRouter.DORA_TAG);
         DataStream<CicdEvent> healthStream = routedStream.getSideOutput(EventRouter.HEALTH_TAG);
-        DataStream<CicdEvent> lateStream   = routedStream.getSideOutput(EventRouter.LATE_TAG);
         DataStream<CicdEvent> cepStream    = routedStream.getSideOutput(EventRouter.CEP_TAG);
 
         // ════════════════════════════════════════════════════════════════
         // [A] DORA Metrics → Kafka + Postgres + Grafana
         // ════════════════════════════════════════════════════════════════
 
-        DataStream<MetricResult> deployFreq =
+        SingleOutputStreamOperator<MetricResult> deployFreq =
                 DeploymentFrequencyOperator.compute(doraStream, Time.days(1));
         sinkMetric(deployFreq, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq");
+
+        // Deploy events beyond the allowed-lateness grace period → alert table only (no Kafka)
+        DataStream<CicdEvent> deployTrulyLate =
+                deployFreq.getSideOutput(DeploymentFrequencyOperator.TRULY_LATE_TAG);
+        auditTrulyLateEvents(deployTrulyLate, "dora-deploy-freq");
 
         DataStream<MetricResult> leadTime = DoraOperators.leadTime(doraStream);
         sinkMetric(leadTime, FlinkConfig.TOPIC_METRICS, "dora-lead-time");
 
-        DataStream<MetricResult> cfr =
+        SingleOutputStreamOperator<MetricResult> cfr =
                 DoraOperators.changeFailureRate(doraStream, Time.days(7));
         sinkMetric(cfr, FlinkConfig.TOPIC_METRICS, "dora-cfr");
+
+        DataStream<CicdEvent> cfrTrulyLate =
+                cfr.getSideOutput(DoraOperators.CFR_TRULY_LATE_TAG);
+        auditTrulyLateEvents(cfrTrulyLate, "dora-cfr");
 
         DataStream<MetricResult> mttr = DoraOperators.mttr(doraStream);
         sinkMetric(mttr, FlinkConfig.TOPIC_METRICS, "dora-mttr");
@@ -82,38 +90,39 @@ public class PipelineObservabilityJob {
         // [B] Pipeline Health Score → Kafka + Postgres + Grafana
         // ════════════════════════════════════════════════════════════════
 
-        DataStream<MetricResult> health =
+        SingleOutputStreamOperator<MetricResult> health =
                 PipelineHealthOperator.compute(healthStream);
         sinkMetric(health, FlinkConfig.TOPIC_HEALTH, "health-score");
 
+        DataStream<CicdEvent> healthTrulyLate =
+                health.getSideOutput(PipelineHealthOperator.TRULY_LATE_TAG);
+        auditTrulyLateEvents(healthTrulyLate, "health-score");
+
         // ════════════════════════════════════════════════════════════════
-        // [C] Late Event Processing → Kafka + Postgres + Grafana
+        // [C] Late Event Auditing → Postgres (alert rows) + Postgres/Grafana
+        //     (per-window, per-metric-type counts). No Kafka, no correction.
         // ════════════════════════════════════════════════════════════════
 
-        SingleOutputStreamOperator<MetricResult> lateOp =
-                LateEventOperator.compute(lateStream);
-        sinkMetric(lateOp, FlinkConfig.TOPIC_METRICS, "late-event-metrics");
+        // NOTE: LateEventOperator is audit-only. It does NOT correct any DORA
+        // or health metric — each windowed operator above ([A]/[B]) now owns
+        // its own allowedLateness()/sideOutputLateData() and republishes the
+        // corrected window itself via sinkMetric() (which reaches Grafana).
+        // What lands here is only the events that missed even that grace
+        // period, so they're permanently absent from their metric — this
+        // just counts how many, per pipeline/window/source metric.
+        DataStream<MetricResult> deployLateCounts =
+                LateEventOperator.auditTrulyLate(
+                        deployTrulyLate, MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LATE_EVENTS);
+        DataStream<MetricResult> cfrLateCounts =
+                LateEventOperator.auditTrulyLate(
+                        cfrTrulyLate, MetricResult.MetricType.CHANGE_FAILURE_RATE_LATE_EVENTS);
+        DataStream<MetricResult> healthLateCounts =
+                LateEventOperator.auditTrulyLate(
+                        healthTrulyLate, MetricResult.MetricType.PIPELINE_HEALTH_SCORE_LATE_EVENTS);
 
-        // Truly late events side output → Kafka + Postgres audit
-        DataStream<CicdEvent> trulyLate =
-                lateOp.getSideOutput(LateEventOperator.LATE_TAG);
-        trulyLate
-                .map(e -> String.format(
-                        "{\"pipeline_id\":\"%s\",\"event_type\":\"%s\","
-                        + "\"ts\":\"%s\",\"late\":true}",
-                        e.getPipelineId(), e.getEventType(), e.getEventTimestamp()))
-                .name("format-late-events")
-                .sinkTo(FlinkConfig.stringSink(FlinkConfig.TOPIC_LATE_EVENTS))
-                .name("kafka-sink-late-events");
-
-        trulyLate
-                .map(e -> String.format(
-                        "{\"pipeline_id\":\"%s\",\"event_type\":\"%s\","
-                        + "\"ts\":\"%s\",\"late\":true}",
-                        e.getPipelineId(), e.getEventType(), e.getEventTimestamp()))
-                .name("format-late-events-pg")
-                .addSink(new PostgresStringSink("LATE_EVENT"))
-                .name("postgres-sink-late-events");
+        DataStream<MetricResult> lateEventCounts =
+                deployLateCounts.union(cfrLateCounts, healthLateCounts);
+        sinkMetricNoKafka(lateEventCounts, "late-event-audit-count");
 
         // ════════════════════════════════════════════════════════════════
         // [D] CEP Failure Pattern → Kafka + Postgres + Grafana
@@ -164,6 +173,26 @@ public class PipelineObservabilityJob {
         // 3. Grafana annotations (only for significant events — filtered inside GrafanaSink)
         stream.addSink(new GrafanaSink())
               .name("grafana-sink-" + name);
+    }
+
+    /** Same as sinkMetric() but skips Kafka — used for audit-only metric streams. */
+    private static void sinkMetricNoKafka(DataStream<MetricResult> stream, String name) {
+        stream.addSink(new PostgresMetricSink())
+              .name("postgres-sink-" + name);
+        stream.addSink(new GrafanaSink())
+              .name("grafana-sink-" + name);
+    }
+
+    /** Raw truly-late events → cicd_alerts table only. No Kafka, no metric. */
+    private static void auditTrulyLateEvents(DataStream<CicdEvent> trulyLate, String name) {
+        trulyLate
+                .map(e -> String.format(
+                        "{\"pipeline_id\":\"%s\",\"event_type\":\"%s\","
+                        + "\"ts\":\"%s\",\"late\":true}",
+                        e.getPipelineId(), e.getEventType(), e.getEventTimestamp()))
+                .name("format-truly-late-" + name)
+                .addSink(new PostgresStringSink("LATE_EVENT"))
+                .name("postgres-sink-truly-late-" + name);
     }
 
     /** Build a thin MetricResult wrapper around a CEP JSON string for GrafanaSink. */

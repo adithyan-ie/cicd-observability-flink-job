@@ -44,6 +44,11 @@ import java.time.ZoneOffset;
  *      ON cicd_metrics (window_start_ms, window_end_ms);
  *  CREATE UNIQUE INDEX ux_cicd_metrics_window
  *      ON cicd_metrics (metric_type, pipeline_id, window_start_ms, window_end_ms);
+ *
+ *  Late-event audit rows (see LateEventOperator) use their own specific
+ *  metric_type per source metric (e.g. DEPLOYMENT_FREQUENCY_LATE_EVENTS),
+ *  so metric_type alone keeps them from colliding with each other or with
+ *  the real metric row on this index — no extra column needed.
  * ──────────────────────────────────────────────────────────────────
  * Recomputing the same window (e.g. after a job restart replays the Kafka
  * backlog) UPSERTs via ON CONFLICT instead of inserting a duplicate row.

@@ -4,76 +4,64 @@ import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
-import org.apache.flink.util.OutputTag;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
 /**
- * Late Event Processing
+ * Late Event Auditing
  *
- * Flink features used (that the Python version was NOT using):
+ * This operator no longer corrects any metric. Each windowed DORA/health
+ * operator (DeploymentFrequencyOperator, PipelineHealthOperator,
+ * DoraOperators.changeFailureRate) now owns its own .allowedLateness() /
+ * .sideOutputLateData() and republishes an updated window itself when a
+ * late event arrives within the grace period.
  *
- *   1. OutputTag<CicdEvent>
- *      Typed side output tag — late events are routed here instead of dropped.
+ * What lands here is only the "truly late" side output of those operators —
+ * events that missed even the grace period, so they are permanently absent
+ * from the metric. This operator's only job is to count how many of those
+ * real truly-late events arrive, per pipeline, per processing-time window —
+ * an audit signal, not a correction.
  *
- *   2. .allowedLateness(Time)
- *      Events arriving after the window closes but within this grace period
- *      are still included in the window (which fires again as an update).
- *      Events arriving after this grace period are truly late and go to
- *      the LATE_TAG side output.
+ * Processing-time windows (not event-time) are used deliberately: by
+ * definition these events' timestamps are already behind the watermark,
+ * so an event-time window would just mark them late again and drop them.
  *
- *   3. .sideOutputLateData(LATE_TAG)
- *      Registers the side output — Flink routes truly late events here.
- *      The main stream and side output are independent DataStreams that
- *      can be sunk to different Kafka topics.
- *
- *   4. .getSideOutput(LATE_TAG)
- *      Retrieves the late-event stream from the operator for sinking.
- *
- * The WatermarkStrategy (configured in FlinkConfig) drives all of this:
- * forBoundedOutOfOrderness(30s) means events up to 30s late are not late.
- * allowedLateness(30s) adds another 30s grace after the window closes.
- * Anything beyond that goes to the side output.
+ * The emitted MetricResult uses `lateMetricType` directly as its own
+ * metric_type (e.g. DEPLOYMENT_FREQUENCY_LATE_EVENTS) rather than a single
+ * generic type plus a "which metric" column — metric_type alone then keeps
+ * these rows from colliding with each other or with the real metric on the
+ * existing Postgres unique index, no schema change required.
  */
 public class LateEventOperator {
 
-    /**
-     * Side output tag for truly late events.
-     * Typed as CicdEvent so the late stream is fully typed and sinkable.
-     */
-    public static final OutputTag<CicdEvent> LATE_TAG =
-            new OutputTag<CicdEvent>("late-cicd-events") {};
+    private static final Time AUDIT_WINDOW = Time.minutes(1);
 
     /**
-     * @return  operator result — call .getSideOutput(LATE_TAG) on the
-     *          returned stream to get the late events side stream.
+     * @param trulyLateEvents a metric operator's TRULY_LATE_TAG side output
+     * @param lateMetricType  the specific *_LATE_EVENTS type to emit —
+     *                        identifies which metric's window these missed
      */
-    public static SingleOutputStreamOperator<MetricResult> compute(
-            DataStream<CicdEvent> events) {
+    public static DataStream<MetricResult> auditTrulyLate(
+            DataStream<CicdEvent> trulyLateEvents,
+            MetricResult.MetricType lateMetricType) {
 
-        return events
+        return trulyLateEvents
                 .keyBy(CicdEvent::getPipelineId)
-                .window(TumblingEventTimeWindows.of(Time.minutes(1)))
-                // Events arriving within 30s after window close still counted
-                .allowedLateness(Time.seconds(30))
-                // Events beyond that → LATE_TAG side output (not dropped)
-                .sideOutputLateData(LATE_TAG)
-                .aggregate(new StageCountAgg(), new StageCountWindowFn());
+                .window(TumblingProcessingTimeWindows.of(AUDIT_WINDOW))
+                .aggregate(new StageCountAgg(), new TrulyLateCountWindowFn(lateMetricType));
     }
 
     // ── Accumulator ────────────────────────────────────────────────────
 
     static class StageAcc {
         int  total = 0, failures = 0;
-        long windowStart = 0;
         String serviceName = "";
     }
 
@@ -104,8 +92,14 @@ public class LateEventOperator {
 
     // ── ProcessWindowFunction ──────────────────────────────────────────
 
-    static class StageCountWindowFn
+    static class TrulyLateCountWindowFn
             extends ProcessWindowFunction<StageAcc, MetricResult, String, TimeWindow> {
+
+        private final MetricResult.MetricType lateMetricType;
+
+        TrulyLateCountWindowFn(MetricResult.MetricType lateMetricType) {
+            this.lateMetricType = lateMetricType;
+        }
 
         @Override
         public void process(String pipelineId, Context ctx,
@@ -113,12 +107,11 @@ public class LateEventOperator {
             StageAcc acc = elems.iterator().next();
 
             MetricResult r = new MetricResult(
-                    MetricResult.MetricType.LATE_EVENT_CORRECTED,
+                    lateMetricType,
                     pipelineId, acc.serviceName,
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
                     acc.total, acc.total);
-            r.setDetail("{\"failures\":" + acc.failures + ",\"total\":" + acc.total + "}");
             out.collect(r);
         }
     }
