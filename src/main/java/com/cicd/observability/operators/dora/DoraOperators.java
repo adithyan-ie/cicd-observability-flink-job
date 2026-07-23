@@ -17,7 +17,6 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
-import org.apache.flink.util.OutputTag;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -115,12 +114,13 @@ public class DoraOperators {
     // #3 — Change Failure Rate
     // ══════════════════════════════════════════════════════════════════
 
-    /** Deploy events beyond the allowed-lateness grace period. */
-    public static final OutputTag<CicdEvent> CFR_TRULY_LATE_TAG =
-            new OutputTag<CicdEvent>("cfr-truly-late-events") {};
-
     private static final Time CFR_ALLOWED_LATENESS = Time.hours(1);
 
+    /**
+     * Truly-late events (beyond CFR_ALLOWED_LATENESS) are silently dropped —
+     * no sideOutputLateData() here. Only DeploymentFrequencyOperator keeps
+     * a truly-late audit trail; see its class comment for why.
+     */
     public static SingleOutputStreamOperator<MetricResult> changeFailureRate(
             DataStream<CicdEvent> events, Time windowSize) {
 
@@ -130,7 +130,6 @@ public class DoraOperators {
                 .keyBy(CicdEvent::getPipelineId)
                 .window(TumblingEventTimeWindows.of(windowSize))
                 .allowedLateness(CFR_ALLOWED_LATENESS)
-                .sideOutputLateData(CFR_TRULY_LATE_TAG)
                 .aggregate(new CfrAgg(), new CfrWindowFn());
     }
 

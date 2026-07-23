@@ -32,6 +32,13 @@ import java.time.ZoneOffset;
  * Keeping these separate means the live tile updates instantly without
  * forcing the historical window to re-fire repeatedly (which previously
  * caused checkpoint-timeout instability when replaying a Kafka backlog).
+ *
+ * Truly-late auditing (see {@link #auditTrulyLate}) is kept only for this
+ * metric — deployment frequency is the DORA number stakeholders actually
+ * look at day to day, so it's worth knowing when a deploy event arrives too
+ * late to count. CFR and Pipeline Health silently drop truly-late events
+ * instead (no sideOutputLateData() in those operators) to avoid tracking
+ * detail nobody was asking for.
  */
 public class DeploymentFrequencyOperator {
 
@@ -56,6 +63,36 @@ public class DeploymentFrequencyOperator {
                 .allowedLateness(ALLOWED_LATENESS)
                 .sideOutputLateData(TRULY_LATE_TAG)
                 .aggregate(new DeployCountAgg(), new DeployFreqWindowFn(windowDays));
+    }
+
+    /**
+     * Turns each truly-late event into a detailed JSON audit record — event
+     * ID, the event's own timestamp, AND the watermark at the moment it was
+     * processed, so it's clear exactly how far behind the watermark it
+     * arrived (rather than just a bare count of "N late events").
+     */
+    public static SingleOutputStreamOperator<String> auditTrulyLate(DataStream<CicdEvent> trulyLateEvents) {
+        return trulyLateEvents
+                .keyBy(CicdEvent::getPipelineId)
+                .process(new TrulyLateAuditFn());
+    }
+
+    static class TrulyLateAuditFn extends KeyedProcessFunction<String, CicdEvent, String> {
+
+        @Override
+        public void processElement(CicdEvent e, Context ctx, Collector<String> out) {
+            long watermarkMs = ctx.timerService().currentWatermark();
+            String eventTime = Instant.ofEpochMilli(e.getTimestampMs()).toString();
+            String watermarkTime = watermarkMs == Long.MIN_VALUE
+                    ? null
+                    : Instant.ofEpochMilli(watermarkMs).toString();
+
+            out.collect(String.format(
+                    "{\"event_id\":\"%s\",\"pipeline_id\":\"%s\",\"service_name\":\"%s\","
+                    + "\"event_type\":\"%s\",\"event_time\":\"%s\",\"watermark_time\":%s,\"late\":true}",
+                    e.getEventId(), e.getPipelineId(), e.getServiceName(), e.getEventType(),
+                    eventTime, watermarkTime == null ? "null" : "\"" + watermarkTime + "\""));
+        }
     }
 
     // ── Accumulator ────────────────────────────────────────────────────
