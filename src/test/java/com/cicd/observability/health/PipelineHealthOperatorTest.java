@@ -72,7 +72,7 @@ public class PipelineHealthOperatorTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        PipelineHealthOperator.compute(withWatermarks(events))
+        PipelineHealthOperator.compute(withWatermarks(events), Time.minutes(10))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
@@ -102,7 +102,7 @@ public class PipelineHealthOperatorTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        PipelineHealthOperator.compute(withWatermarks(events))
+        PipelineHealthOperator.compute(withWatermarks(events), Time.minutes(10))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
@@ -128,7 +128,7 @@ public class PipelineHealthOperatorTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        PipelineHealthOperator.compute(withWatermarks(events))
+        PipelineHealthOperator.compute(withWatermarks(events), Time.minutes(10))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
@@ -155,7 +155,7 @@ public class PipelineHealthOperatorTest {
         );
 
         List<MetricResult> results = new ArrayList<>();
-        PipelineHealthOperator.compute(withWatermarks(events))
+        PipelineHealthOperator.compute(withWatermarks(events), Time.minutes(10))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 

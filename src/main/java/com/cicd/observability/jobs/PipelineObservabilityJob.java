@@ -7,7 +7,7 @@ import com.cicd.observability.operators.cep.FailurePatternOperator;
 import com.cicd.observability.operators.dora.DeploymentFrequencyOperator;
 import com.cicd.observability.operators.dora.DoraOperators;
 import com.cicd.observability.operators.health.PipelineHealthOperator;
-import com.cicd.observability.operators.late.LateEventOperator;
+// import com.cicd.observability.operators.late.LateEventOperator; // disabled — see [C] below
 import com.cicd.observability.router.EventRouter;
 import com.cicd.observability.sink.GrafanaSink;
 import com.cicd.observability.sink.PostgresMetricSink;
@@ -17,7 +17,6 @@ import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,7 +63,7 @@ public class PipelineObservabilityJob {
         // ════════════════════════════════════════════════════════════════
 
         SingleOutputStreamOperator<MetricResult> deployFreq =
-                DeploymentFrequencyOperator.compute(doraStream, Time.minutes(10));
+                DeploymentFrequencyOperator.compute(doraStream, FlinkConfig.DEPLOYMENT_FREQUENCY_WINDOW);
         sinkMetric(deployFreq, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq");
 
         // Deploy events beyond the allowed-lateness grace period → alert table only (no Kafka)
@@ -79,18 +78,18 @@ public class PipelineObservabilityJob {
         // historical daily window above, so it updates instantly per deploy
         // without forcing the window to re-fire.
         DataStream<MetricResult> deployFreqLive =
-                DeploymentFrequencyOperator.computeLive(doraStream, Time.minutes(10));
+                DeploymentFrequencyOperator.computeLive(doraStream, FlinkConfig.DEPLOYMENT_FREQUENCY_WINDOW);
         sinkMetric(deployFreqLive, FlinkConfig.TOPIC_METRICS, "dora-deploy-freq-live");
 
         DataStream<MetricResult> leadTime = DoraOperators.leadTime(doraStream);
         sinkMetric(leadTime, FlinkConfig.TOPIC_METRICS, "dora-lead-time");
 
         SingleOutputStreamOperator<MetricResult> cfr =
-                DoraOperators.changeFailureRate(doraStream, Time.days(7));
+                DoraOperators.changeFailureRate(doraStream, FlinkConfig.CHANGE_FAILURE_RATE_WINDOW);
         sinkMetric(cfr, FlinkConfig.TOPIC_METRICS, "dora-cfr");
 
         DataStream<MetricResult> cfrLive =
-                DoraOperators.changeFailureRateLive(doraStream, Time.days(7));
+                DoraOperators.changeFailureRateLive(doraStream, FlinkConfig.CHANGE_FAILURE_RATE_WINDOW);
         sinkMetric(cfrLive, FlinkConfig.TOPIC_METRICS, "dora-cfr-live");
 
         DataStream<MetricResult> mttr = DoraOperators.mttr(doraStream);
@@ -101,32 +100,34 @@ public class PipelineObservabilityJob {
         // ════════════════════════════════════════════════════════════════
 
         SingleOutputStreamOperator<MetricResult> health =
-                PipelineHealthOperator.compute(healthStream);
+                PipelineHealthOperator.compute(healthStream, FlinkConfig.PIPELINE_HEALTH_WINDOW);
         sinkMetric(health, FlinkConfig.TOPIC_HEALTH, "health-score");
 
         DataStream<MetricResult> healthLive =
-                PipelineHealthOperator.computeLive(healthStream, Time.minutes(10));
+                PipelineHealthOperator.computeLive(healthStream, FlinkConfig.PIPELINE_HEALTH_WINDOW);
         DataStream<MetricResult> healthLiveChanged =
                 PipelineHealthOperator.filterChanged(healthLive);
         sinkMetric(healthLiveChanged, FlinkConfig.TOPIC_HEALTH, "health-score-live");
 
         // ════════════════════════════════════════════════════════════════
-        // [C] Late Event Auditing → Postgres (alert rows) + Postgres/Grafana
-        //     (per-window count). No Kafka, no correction.
-        // ════════════════════════════════════════════════════════════════
-
-        // NOTE: LateEventOperator is audit-only. It does NOT correct any DORA
-        // or health metric — DeploymentFrequencyOperator owns its own
-        // allowedLateness()/sideOutputLateData() and republishes the
-        // corrected window itself via sinkMetric() (which reaches Grafana).
-        // What lands here is only the events that missed even that grace
-        // period, so they're permanently absent from the metric — this just
-        // counts how many, per pipeline/window. CFR and Health silently drop
-        // truly-late events instead (no audit trail for those two).
-        DataStream<MetricResult> deployLateCounts =
-                LateEventOperator.auditTrulyLate(
-                        deployTrulyLate, MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LATE_EVENTS);
-        sinkMetricNoKafka(deployLateCounts, "late-event-audit-count");
+        // [C] Late Event Auditing — DISABLED for now.
+        //
+        // LateEventOperator re-bucketed deployTrulyLate into 10-minute
+        // *processing-time* tumbling windows to feed the Grafana "Truly-Late
+        // Events (count per window)" panel. Processing-time windows only
+        // fire once 10 real wall-clock minutes elapse while the job keeps
+        // running — they don't flush on stream completion the way
+        // event-time windows do — so short-lived job runs/restarts left
+        // this panel permanently on "No data" even though truly-late events
+        // were happening. Keeping the per-event detail panel (fed directly
+        // by DeploymentFrequencyOperator.auditTrulyLate() above, no
+        // windowing involved) and the live/history metrics; re-enable this
+        // once the processing-time window issue is addressed.
+        //
+        // DataStream<MetricResult> deployLateCounts =
+        //         LateEventOperator.auditTrulyLate(
+        //                 deployTrulyLate, MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LATE_EVENTS);
+        // sinkMetricNoKafka(deployLateCounts, "late-event-audit-count");
 
         // ════════════════════════════════════════════════════════════════
         // [D] CEP Failure Pattern → Kafka + Postgres + Grafana
@@ -179,13 +180,13 @@ public class PipelineObservabilityJob {
               .name("grafana-sink-" + name);
     }
 
-    /** Same as sinkMetric() but skips Kafka — used for audit-only metric streams. */
-    private static void sinkMetricNoKafka(DataStream<MetricResult> stream, String name) {
-        stream.addSink(new PostgresMetricSink())
-              .name("postgres-sink-" + name);
-        stream.addSink(new GrafanaSink())
-              .name("grafana-sink-" + name);
-    }
+    // /** Same as sinkMetric() but skips Kafka — used for audit-only metric streams. */
+    // private static void sinkMetricNoKafka(DataStream<MetricResult> stream, String name) {
+    //     stream.addSink(new PostgresMetricSink())
+    //           .name("postgres-sink-" + name);
+    //     stream.addSink(new GrafanaSink())
+    //           .name("grafana-sink-" + name);
+    // }
 
     /** Build a thin MetricResult wrapper around a CEP JSON string for GrafanaSink. */
     private static MetricResult buildAlertMetric(String json,

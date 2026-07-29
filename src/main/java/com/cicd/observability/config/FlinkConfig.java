@@ -14,6 +14,7 @@ import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
 import javax.annotation.Nullable;
@@ -56,9 +57,15 @@ public class FlinkConfig {
     public static final Duration IDLE_TIMEOUT         = Duration.ofSeconds(60);
 
     // ── Windows ────────────────────────────────────────────────────────
-    public static final Duration WINDOW_1_MIN  = Duration.ofMinutes(1);
-    public static final Duration WINDOW_1_DAY  = Duration.ofDays(1);
-    public static final Duration WINDOW_7_DAYS = Duration.ofDays(7);
+    //
+    // Single source of truth per metric, shared by that metric's historical
+    // compute() window AND its computeLive() bucket — they must always
+    // match, or the live tile can never accumulate past 1 event before
+    // resetting (see DeploymentFrequencyOperator / PipelineHealthOperator
+    // computeLive() javadoc).
+    public static final Time DEPLOYMENT_FREQUENCY_WINDOW = Time.days(1);
+    public static final Time CHANGE_FAILURE_RATE_WINDOW  = Time.days(7);
+    public static final Time PIPELINE_HEALTH_WINDOW      = Time.minutes(10);
 
     // ── CEP ────────────────────────────────────────────────────────────
     public static final Duration CEP_PATTERN_WINDOW = Duration.ofMinutes(10);

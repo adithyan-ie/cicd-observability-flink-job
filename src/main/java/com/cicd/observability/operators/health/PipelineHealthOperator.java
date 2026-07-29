@@ -57,11 +57,15 @@ public class PipelineHealthOperator {
      * Truly-late events (beyond ALLOWED_LATENESS) are silently dropped — no
      * sideOutputLateData() here. Only DeploymentFrequencyOperator keeps a
      * truly-late audit trail; see its class comment for why.
+     *
+     * @param windowSize must match the value passed to {@link #computeLive}
+     *                   for the same stream — see that method's javadoc.
      */
-    public static SingleOutputStreamOperator<MetricResult> compute(DataStream<CicdEvent> events) {
+    public static SingleOutputStreamOperator<MetricResult> compute(
+            DataStream<CicdEvent> events, Time windowSize) {
         return events
                 .keyBy(CicdEvent::getPipelineId)
-                .window(TumblingEventTimeWindows.of(Time.minutes(10)))
+                .window(TumblingEventTimeWindows.of(windowSize))
                 .allowedLateness(ALLOWED_LATENESS)
                 .aggregate(new HealthAgg(), new HealthWindowFn());
     }
@@ -221,9 +225,13 @@ public class PipelineHealthOperator {
     private static final String LIVE_WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
     /**
-     * @param windowSize same bucket size as {@link #compute}'s window (e.g.
-     *                   1 day in production) — the live tally resets each
-     *                   time event-time crosses one of these boundaries.
+     * @param windowSize must be the same bucket size passed to {@link #compute}
+     *                   for the same stream — the live tally resets each time
+     *                   event-time crosses one of these boundaries, so "live
+     *                   count" always means "so far in the window that's
+     *                   currently open." A mismatched size means the live
+     *                   tile can reset before the historical window ever
+     *                   accumulates more than one event.
      */
     public static DataStream<MetricResult> computeLive(DataStream<CicdEvent> events, Time windowSize) {
         return events

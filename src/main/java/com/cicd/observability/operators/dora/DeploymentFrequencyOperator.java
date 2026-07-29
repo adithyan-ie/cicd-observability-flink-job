@@ -162,11 +162,14 @@ public class DeploymentFrequencyOperator {
     private static final String LIVE_WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
     /**
-     * @param windowSize same bucket size as the historical {@link #compute}
-     *                   window (e.g. 1 day in production) — the live counter
-     *                   resets each time event-time crosses one of these
-     *                   boundaries, so "live count" always means "count so
-     *                   far in the window that's currently open."
+     * @param windowSize must be the same bucket size passed to the historical
+     *                   {@link #compute} for the same stream — the live
+     *                   counter resets each time event-time crosses one of
+     *                   these boundaries, so "live count" always means
+     *                   "count so far in the window that's currently open."
+     *                   A mismatched size means the live tile can reset
+     *                   before the historical window ever accumulates more
+     *                   than one event.
      */
     public static SingleOutputStreamOperator<MetricResult> computeLive(
             DataStream<CicdEvent> events, Time windowSize) {

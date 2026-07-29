@@ -133,8 +133,28 @@
       ]
     },
     {
+      "id": 9,
+      "title": "Deployment Frequency — Truly-Late Events (per event detail)",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT inserted_at AS computed_at, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
+          "rawQuery": true
+        }
+      ]
+    }
+  ],
+  "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",
+  "_disabledPanels": [
+    {
       "id": 8,
       "title": "Deployment Frequency — Truly-Late Events (count per window)",
+      "_disabledReason": "Backing metric (DEPLOYMENT_FREQUENCY_LATE_EVENTS) is no longer sunk — LateEventOperator wiring commented out in PipelineObservabilityJob.java (see [C] there). Its processing-time 10-min window rarely closed before the job restarted, leaving this permanently on 'No data'. Live metrics, Window History, and the per-event detail panel above are unaffected.",
       "type": "table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -144,22 +164,6 @@
           "refId": "A",
           "format": "table",
           "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS late_event_count, inserted_at AS computed_at FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LATE_EVENTS' ORDER BY window_end_ms DESC LIMIT 20",
-          "rawQuery": true
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "Deployment Frequency — Truly-Late Events (per event detail)",
-      "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 44 },
-      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT inserted_at AS computed_at, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
           "rawQuery": true
         }
       ]
