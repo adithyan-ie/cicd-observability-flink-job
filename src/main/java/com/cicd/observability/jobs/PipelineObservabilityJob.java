@@ -8,6 +8,8 @@ import com.cicd.observability.operators.dora.DeploymentFrequencyOperator;
 import com.cicd.observability.operators.dora.DoraOperators;
 import com.cicd.observability.operators.health.PipelineHealthOperator;
 // import com.cicd.observability.operators.late.LateEventOperator; // disabled — see [C] below
+import com.cicd.observability.operators.late.TrulyLateAuditOperator;
+import com.cicd.observability.operators.watermark.WatermarkReporterOperator;
 import com.cicd.observability.router.EventRouter;
 import com.cicd.observability.sink.GrafanaSink;
 import com.cicd.observability.sink.PostgresMetricSink;
@@ -58,6 +60,12 @@ public class PipelineObservabilityJob {
         DataStream<CicdEvent> healthStream = routedStream.getSideOutput(EventRouter.HEALTH_TAG);
         DataStream<CicdEvent> cepStream    = routedStream.getSideOutput(EventRouter.CEP_TAG);
 
+        // Job-global event-time watermark — feeds the "Current Watermark"
+        // stat panel, so it's directly readable when constructing a
+        // deliberately-late test event.
+        DataStream<MetricResult> watermarkReport = WatermarkReporterOperator.report(rawStream);
+        sinkMetric(watermarkReport, FlinkConfig.TOPIC_METRICS, "watermark");
+
         // ════════════════════════════════════════════════════════════════
         // [A] DORA Metrics → Kafka + Postgres + Grafana
         // ════════════════════════════════════════════════════════════════
@@ -69,8 +77,7 @@ public class PipelineObservabilityJob {
         // Deploy events beyond the allowed-lateness grace period → alert table only (no Kafka)
         DataStream<CicdEvent> deployTrulyLate =
                 deployFreq.getSideOutput(DeploymentFrequencyOperator.TRULY_LATE_TAG);
-        DeploymentFrequencyOperator.auditTrulyLate(deployTrulyLate)
-                .name("format-truly-late-dora-deploy-freq")
+        TrulyLateAuditOperator.auditTrulyLate(deployTrulyLate, "DEPLOYMENT_FREQUENCY")
                 .addSink(new PostgresStringSink("LATE_EVENT"))
                 .name("postgres-sink-truly-late-dora-deploy-freq");
 
@@ -88,6 +95,13 @@ public class PipelineObservabilityJob {
                 DoraOperators.changeFailureRate(doraStream, FlinkConfig.CHANGE_FAILURE_RATE_WINDOW);
         sinkMetric(cfr, FlinkConfig.TOPIC_METRICS, "dora-cfr");
 
+        // Deploy events beyond CFR's allowed-lateness grace period → alert table only (no Kafka)
+        DataStream<CicdEvent> cfrTrulyLate =
+                cfr.getSideOutput(DoraOperators.CFR_TRULY_LATE_TAG);
+        TrulyLateAuditOperator.auditTrulyLate(cfrTrulyLate, "CHANGE_FAILURE_RATE")
+                .addSink(new PostgresStringSink("LATE_EVENT"))
+                .name("postgres-sink-truly-late-dora-cfr");
+
         DataStream<MetricResult> cfrLive =
                 DoraOperators.changeFailureRateLive(doraStream, FlinkConfig.CHANGE_FAILURE_RATE_WINDOW);
         sinkMetric(cfrLive, FlinkConfig.TOPIC_METRICS, "dora-cfr-live");
@@ -102,6 +116,13 @@ public class PipelineObservabilityJob {
         SingleOutputStreamOperator<MetricResult> health =
                 PipelineHealthOperator.compute(healthStream, FlinkConfig.PIPELINE_HEALTH_WINDOW);
         sinkMetric(health, FlinkConfig.TOPIC_HEALTH, "health-score");
+
+        // Stage events beyond Pipeline Health's allowed-lateness grace period → alert table only (no Kafka)
+        DataStream<CicdEvent> healthTrulyLate =
+                health.getSideOutput(PipelineHealthOperator.TRULY_LATE_TAG);
+        TrulyLateAuditOperator.auditTrulyLate(healthTrulyLate, "PIPELINE_HEALTH_SCORE")
+                .addSink(new PostgresStringSink("LATE_EVENT"))
+                .name("postgres-sink-truly-late-health-score");
 
         DataStream<MetricResult> healthLive =
                 PipelineHealthOperator.computeLive(healthStream, FlinkConfig.PIPELINE_HEALTH_WINDOW);
@@ -120,9 +141,10 @@ public class PipelineObservabilityJob {
         // event-time windows do — so short-lived job runs/restarts left
         // this panel permanently on "No data" even though truly-late events
         // were happening. Keeping the per-event detail panel (fed directly
-        // by DeploymentFrequencyOperator.auditTrulyLate() above, no
-        // windowing involved) and the live/history metrics; re-enable this
-        // once the processing-time window issue is addressed.
+        // by TrulyLateAuditOperator.auditTrulyLate() above, no windowing
+        // involved — now wired for deploy freq, CFR, and health score alike)
+        // and the live/history metrics; re-enable this once the
+        // processing-time window issue is addressed.
         //
         // DataStream<MetricResult> deployLateCounts =
         //         LateEventOperator.auditTrulyLate(

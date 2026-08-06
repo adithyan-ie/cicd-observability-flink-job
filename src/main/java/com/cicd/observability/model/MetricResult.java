@@ -30,7 +30,10 @@ public class MetricResult implements Serializable {
         PIPELINE_HEALTH_SCORE_LATE_EVENTS,
         // CEP
         FAILURE_PATTERN_DETECTED,
-        PATTERN_TIMEOUT
+        PATTERN_TIMEOUT,
+        // Job-global event-time watermark, reported periodically for
+        // dashboard/testing visibility — see WatermarkReporterOperator.
+        WATERMARK
     }
 
     private MetricType metricType;

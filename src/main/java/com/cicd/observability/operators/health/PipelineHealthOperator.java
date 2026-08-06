@@ -16,6 +16,7 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -50,14 +51,19 @@ public class PipelineHealthOperator {
 
     private static final Time ALLOWED_LATENESS = Time.hours(1);
 
+    /** Health-stage events too late even for the allowed-lateness grace period. */
+    public static final OutputTag<CicdEvent> TRULY_LATE_TAG =
+            new OutputTag<CicdEvent>("health-truly-late-events") {};
+
     // ════════════════════════════════════════════════════════════════
     // Historical metric — 1-day tumbling window, default EventTimeTrigger
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * Truly-late events (beyond ALLOWED_LATENESS) are silently dropped — no
-     * sideOutputLateData() here. Only DeploymentFrequencyOperator keeps a
-     * truly-late audit trail; see its class comment for why.
+     * Truly-late events (beyond ALLOWED_LATENESS) are side-outputted via
+     * TRULY_LATE_TAG — see TrulyLateAuditOperator.auditTrulyLate() for
+     * where these get turned into JSON audit records; wiring lives in
+     * PipelineObservabilityJob.
      *
      * @param windowSize must match the value passed to {@link #computeLive}
      *                   for the same stream — see that method's javadoc.
@@ -68,6 +74,7 @@ public class PipelineHealthOperator {
                 .keyBy(CicdEvent::getPipelineId)
                 .window(TumblingEventTimeWindows.of(windowSize))
                 .allowedLateness(ALLOWED_LATENESS)
+                .sideOutputLateData(TRULY_LATE_TAG)
                 .aggregate(new HealthAgg(), new HealthWindowFn());
     }
 

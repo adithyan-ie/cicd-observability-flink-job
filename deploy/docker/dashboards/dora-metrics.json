@@ -1,7 +1,7 @@
 {
   "uid": "cicd-dora-metrics",
   "title": "CI/CD DORA Metrics (Real-time)",
-  "timezone": "browser",
+  "timezone": "utc",
   "refresh": "5s",
   "time": { "from": "now-6h", "to": "now" },
   "schemaVersion": 39,
@@ -29,15 +29,41 @@
         "query": "1",
         "current": { "text": "1", "value": "1" },
         "hide": 2
+      },
+      {
+        "name": "deployment_frequency_window_seconds",
+        "type": "constant",
+        "label": "Deployment frequency window size (seconds)",
+        "description": "Must match FlinkConfig.DEPLOYMENT_FREQUENCY_WINDOW (currently Time.days(1) = 86400s), which also sizes the live counter's bucket in LiveDeployCounter. Not auto-synced — update by hand if that constant changes.",
+        "query": "86400",
+        "current": { "text": "86400", "value": "86400" },
+        "hide": 2
       }
     ]
   },
   "panels": [
     {
+      "id": 10,
+      "title": "Current Watermark (job-global)",
+      "description": "The event-time watermark the whole job is currently at (WatermarkReporterOperator). To test truly-late handling: compare THIS value (not your test event's timestamp) against a window's window_alive_until in the panel below. Once this watermark passes that window's window_alive_until, an event timestamped inside that window (still [window_start, window_end) — window_alive_until never changes that range) will route to TRULY_LATE_TAG instead of updating the window.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT value AS current_watermark FROM cicd_metrics WHERE metric_type = 'WATERMARK' AND pipeline_id = 'GLOBAL' ORDER BY inserted_at DESC LIMIT 1",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
       "id": 1,
       "title": "Deployment Frequency (deploys/day)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
@@ -53,7 +79,7 @@
       "id": 2,
       "title": "Lead Time for Changes (minutes)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": { "unit": "m" }, "overrides": [] },
       "targets": [
@@ -69,7 +95,7 @@
       "id": 3,
       "title": "Change Failure Rate (%)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": {
         "defaults": { "unit": "percent" },
@@ -103,7 +129,7 @@
       "id": 4,
       "title": "Mean Time to Recovery (minutes)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": { "unit": "m" }, "overrides": [] },
       "targets": [
@@ -119,7 +145,7 @@
       "id": 5,
       "title": "Pipeline Health Score",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": {
         "defaults": { "unit": "short", "max": 100, "min": 0 },
@@ -152,15 +178,16 @@
     {
       "id": 6,
       "title": "Live Metric Values",
+      "description": "window_start/window_end are computed, not stored — the live counter upserts one Postgres row per pipeline under a fixed 1970-01-01 sentinel (see LIVE_WINDOW_MARKER in DeploymentFrequencyOperator), so there's no real per-row window to select. These columns approximate the currently-open window by bucketing inserted_at into deployment_frequency_window_seconds-sized, epoch-aligned buckets — the same arithmetic LiveDeployCounter itself uses (ts / windowMs). Good enough to eyeball 'which window is live counting into right now', not a substitute for the Window History panel below.",
       "type": "table",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
+          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band, to_timestamp(floor(extract(epoch FROM inserted_at) / $deployment_frequency_window_seconds) * $deployment_frequency_window_seconds) AS window_start, to_timestamp(floor(extract(epoch FROM inserted_at) / $deployment_frequency_window_seconds) * $deployment_frequency_window_seconds + $deployment_frequency_window_seconds) AS window_end FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
           "rawQuery": true
         }
       ]
@@ -168,31 +195,33 @@
     {
       "id": 7,
       "title": "Deployment Frequency — Window History",
+      "description": "window_alive_until = window_end + ALLOWED_LATENESS: how long (in watermark time, not event time) this window's state stays open for late corrections after it first fires. It does NOT extend which event_timestamps belong to this window — that's always [window_start, window_end), for on-time and late events alike. To test truly-late handling: push an event timestamped inside [window_start, window_end) only after the Current Watermark panel above already reads past this row's window_alive_until.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at, to_timestamp(window_end_ms / 1000) + interval '$allowed_lateness_hours hours' AS late_accepted_until FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
+          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at, to_timestamp(window_end_ms / 1000) + interval '$allowed_lateness_hours hours' AS window_alive_until FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
           "rawQuery": true
         }
       ]
     },
     {
       "id": 9,
-      "title": "Deployment Frequency — Truly-Late Events (per event detail)",
+      "title": "Truly-Late Events — All Metrics (per event detail)",
+      "description": "Every event that missed its metric's allowed-lateness grace period, across all three windowed metrics that side-output truly-late data (DeploymentFrequencyOperator, DoraOperators.changeFailureRate, PipelineHealthOperator) — see TrulyLateAuditOperator. source_metric identifies which metric's window the event was too late for; it's the same underlying cicd_alerts LATE_EVENT audit trail regardless of event_type, so use source_metric (not event_type) to filter by metric.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 38 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT inserted_at AS computed_at, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
+          "rawSql": "SELECT inserted_at AS computed_at, payload->>'source_metric' AS source_metric, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
           "rawQuery": true
         }
       ]
@@ -205,7 +234,7 @@
       "title": "Deployment Frequency — Truly-Late Events (count per window)",
       "_disabledReason": "Backing metric (DEPLOYMENT_FREQUENCY_LATE_EVENTS) is no longer sunk — LateEventOperator wiring commented out in PipelineObservabilityJob.java (see [C] there). Its processing-time 10-min window rarely closed before the job restarted, leaving this permanently on 'No data'. Live metrics, Window History, and the per-event detail panel above are unaffected.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 38 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [
