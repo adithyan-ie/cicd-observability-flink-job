@@ -1,5 +1,6 @@
 package com.cicd.observability.operators.dora;
 
+import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import org.apache.flink.api.common.functions.AggregateFunction;
@@ -203,6 +204,19 @@ public class DeploymentFrequencyOperator {
             long ts = event.getTimestampMs();
             Long currentWindowEnd = windowEnd.value();
 
+            if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
+                long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
+                if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
+                    // This event's own window has already closed per the
+                    // job-global watermark (e.g. another pipeline's future-
+                    // dated sentinel advanced it), even though this key's
+                    // own state hasn't caught up. Only the historical stream
+                    // (allowedLateness) should reflect it — see
+                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+                    return;
+                }
+            }
+
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
                 // Late event belonging to a window that has already closed.
                 // The live tile only reflects the window currently open —
@@ -219,6 +233,9 @@ public class DeploymentFrequencyOperator {
                 // case where the close-timer below hasn't fired yet, e.g.
                 // several windows are skipped at once).
                 counter.clear();
+                if (currentWindowEnd != null) {
+                    ctx.timerService().deleteEventTimeTimer(currentWindowEnd - 1);
+                }
                 long nextWindowEnd = ((ts / windowMs) + 1) * windowMs;
                 windowEnd.update(nextWindowEnd);
                 ctx.timerService().registerEventTimeTimer(nextWindowEnd - 1);
@@ -237,6 +254,18 @@ public class DeploymentFrequencyOperator {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
+            // A later event can roll the window over early (processElement)
+            // and register a new close-timer without this one having fired
+            // yet. When that happens this timer is stale — the window it
+            // was meant to close already closed early, and counter/windowEnd
+            // now belong to a newer window. Only reset if this timer still
+            // matches the window that's actually open, otherwise it would
+            // wipe out the new window's live count with a stale 0.
+            Long currentWindowEnd = windowEnd.value();
+            if (currentWindowEnd == null || timestamp != currentWindowEnd - 1) {
+                return;
+            }
+
             // Window closed — emit the reset itself so Postgres/Grafana show
             // 0 immediately, instead of the last window's count sitting
             // there stale until the next deploy happens.

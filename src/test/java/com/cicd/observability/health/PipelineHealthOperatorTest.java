@@ -20,10 +20,11 @@ import static org.junit.Assert.*;
  * JUnit tests for Pipeline Health Score operator.
  *
  * The health score is a weighted composite:
- *   build  × 0.40
- *   test   × 0.30
- *   sonar  × 0.20
- *   package× 0.10
+ *   build   × 0.35
+ *   test    × 0.25
+ *   sonar   × 0.15
+ *   package × 0.10
+ *   deploy  × 0.15
  *
  * All events successful → score = 100.0 (Elite)
  * All events failed     → score = 0.0   (Low)
@@ -36,6 +37,18 @@ public class PipelineHealthOperatorTest {
     public void setUp() {
         env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
+    }
+
+    /**
+     * Floored to a window boundary + 1s, not raw System.currentTimeMillis().
+     * The live tests below place events at base, base+1000, base+15000 etc.
+     * within a 10s window (Time.seconds(10)) — an unaligned wall-clock base
+     * makes whether two events land in the same or a different window a
+     * coin-flip against real time, causing flaky failures unrelated to the
+     * behavior under test.
+     */
+    private long alignedBase(long windowMs) {
+        return (System.currentTimeMillis() / windowMs) * windowMs + 1000;
     }
 
     private CicdEvent event(String pipeline, String type, String status, long tsMs) {
@@ -114,6 +127,37 @@ public class PipelineHealthOperatorTest {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    // Deploy failures drag score below threshold
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    public void testHealthScore_deployFailures_reducesScore() throws Exception {
+        long base = System.currentTimeMillis();
+        // Commit A: build succeeds, deploy fails (e.g. bad configmap).
+        // Commit B: build succeeds, deploy succeeds.
+        // build rate  = 100% (2/2 build successes)
+        // deploy rate = 50%  (1/2 — A's DEPLOY_FAILED, B's DEPLOY_SUCCESS)
+        // test/sonar/package unobserved → default 100%
+        // score = (100 × 0.35) + (100 × 0.25) + (100 × 0.15) + (100 × 0.10) + (50 × 0.15) = 92.5
+        List<CicdEvent> events = List.of(
+                event("p6", "BUILD_SUCCESS",  "SUCCESS", base),
+                event("p6", "DEPLOY_FAILED",  "FAILURE", base + 500),
+                event("p6", "BUILD_SUCCESS",  "SUCCESS", base + 1000),
+                event("p6", "DEPLOY_SUCCESS", "SUCCESS", base + 1500)
+        );
+
+        List<MetricResult> results = new ArrayList<>();
+        PipelineHealthOperator.compute(withWatermarks(events), Time.minutes(10))
+                .executeAndCollect()
+                .forEachRemaining(results::add);
+
+        assertFalse(results.isEmpty());
+        MetricResult r = results.get(0);
+        assertEquals(92.5, r.getValue(), 1.0); // ±1 tolerance
+        assertTrue(r.getDetail().contains("deploy"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     // All stages fail → Low band
     // ══════════════════════════════════════════════════════════════════
 
@@ -169,7 +213,7 @@ public class PipelineHealthOperatorTest {
 
     @Test
     public void testLiveHealthScore_updatesPerEventWithinWindow() throws Exception {
-        long base = System.currentTimeMillis();
+        long base = alignedBase(10_000);
         List<CicdEvent> events = List.of(
                 event("p-live-1", "BUILD_SUCCESS", "SUCCESS", base),
                 event("p-live-1", "BUILD_FAILED",  "FAILURE", base + 1000)
@@ -195,7 +239,7 @@ public class PipelineHealthOperatorTest {
 
     @Test
     public void testLiveHealthScore_resetsWhenWindowCloses() throws Exception {
-        long base = System.currentTimeMillis();
+        long base = alignedBase(10_000);
         // Window size 10s. First window: 1 success + 1 failure = 82.5.
         // Third event is 15s later — past the boundary — so the tally
         // must restart (1/1 success = 100), not accumulate to 2/3.
@@ -225,7 +269,7 @@ public class PipelineHealthOperatorTest {
 
     @Test
     public void testLiveHealthScore_dropsLateEventsInsteadOfMiscountingIntoNewWindow() throws Exception {
-        long base = System.currentTimeMillis();
+        long base = alignedBase(10_000);
         List<CicdEvent> events = List.of(
                 event("p-live-3", "BUILD_SUCCESS", "SUCCESS", base + 15000),
                 event("p-live-3", "BUILD_FAILED",  "FAILURE", base + 5000),  // late — belongs to window 1

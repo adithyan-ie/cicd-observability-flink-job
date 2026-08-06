@@ -65,13 +65,15 @@ KAFKA_BATCH_SIZE = 10_000
 KAFKA_LINGER_MS  = 50
 KAFKA_COMPRESS   = "snappy"
 
+# "notification-service", "order-service",
+#     "shipping-service", "user-service", "catalogue-service", "analytics-service",
+#     "reporting-service", "gateway-service", "search-service", "billing-service",
+#     "fulfillment-service", "recommendation-service", "pricing-service",
+#     "review-service", "loyalty-service", "messaging-service"
+
 PIPELINE_IDS = [
     "checkout-service", "payment-service", "auth-service",
-    "inventory-service", "notification-service", "order-service",
-    "shipping-service", "user-service", "catalogue-service", "analytics-service",
-    "reporting-service", "gateway-service", "search-service", "billing-service",
-    "fulfillment-service", "recommendation-service", "pricing-service",
-    "review-service", "loyalty-service", "messaging-service",
+    "inventory-service"
 ]
 
 BRANCHES = [

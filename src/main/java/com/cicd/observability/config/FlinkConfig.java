@@ -56,6 +56,27 @@ public class FlinkConfig {
     public static final Duration MAX_OUT_OF_ORDERNESS = Duration.ofSeconds(30);
     public static final Duration IDLE_TIMEOUT         = Duration.ofSeconds(60);
 
+    // ── Live-metric late gate ─────────────────────────────────────────
+    //
+    // The live counters (LiveDeployCounter / LiveCfrCounter / LiveHealthCounter)
+    // decide "has my window closed?" from per-key state alone: they only roll
+    // over when THAT key's own traffic carries a timestamp past the boundary.
+    // The watermark, however, is job-global — one pipeline's future-dated
+    // event (e.g. a manually-pushed sentinel used to force a window to fire
+    // early in testing) advances it for every pipeline. Any other pipeline
+    // that then receives a "today" event which is genuinely late relative to
+    // that now-advanced watermark has no per-key memory of this: its stored
+    // windowEnd is still "today", so the late event looks perfectly current
+    // and gets counted into live — when only the historical stream (with its
+    // allowedLateness grace period) should reflect it.
+    //
+    // When true, each live counter additionally rejects an event whose own
+    // window has already been passed by ctx.timerService().currentWatermark(),
+    // regardless of that key's local state. When false, the counters fall
+    // back to the original per-key-only check (kept for comparison).
+    public static final boolean LIVE_COUNTER_WATERMARK_GATE =
+            Boolean.parseBoolean(env("LIVE_COUNTER_WATERMARK_GATE", "true"));
+
     // ── Windows ────────────────────────────────────────────────────────
     //
     // Single source of truth per metric, shared by that metric's historical
@@ -64,7 +85,7 @@ public class FlinkConfig {
     // resetting (see DeploymentFrequencyOperator / PipelineHealthOperator
     // computeLive() javadoc).
     public static final Time DEPLOYMENT_FREQUENCY_WINDOW = Time.days(1);
-    public static final Time CHANGE_FAILURE_RATE_WINDOW  = Time.days(7);
+    public static final Time CHANGE_FAILURE_RATE_WINDOW  = Time.days(1);
     public static final Time PIPELINE_HEALTH_WINDOW      = Time.minutes(10);
 
     // ── CEP ────────────────────────────────────────────────────────────

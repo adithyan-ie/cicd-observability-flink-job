@@ -211,21 +211,19 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Real per-event increments (sampleCount>0) vs. close-timer resets
-        // (sampleCount==0, one per window that closes — window 1 closes
-        // mid-stream, window 2 closes at the final end-of-stream watermark).
-        // Split rather than assert on raw indices/size, since the exact
-        // interleaving of the two window-close timers isn't guaranteed.
-        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
-        List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
-
-        assertEquals(3, increments.size());
-        assertEquals(1L, increments.get(0).getSampleCount());
-        assertEquals(2L, increments.get(1).getSampleCount());
+        // Window 1's close-timer must be cancelled when the +15s event rolls
+        // the window over early — otherwise it fires as a stale 0 right
+        // after window 2's real count=1 and overwrites it (this was the bug:
+        // the live tile showed 0 instead of 1 for the newly opened window).
+        // So the only reset here is the genuine end-of-stream close of
+        // window 2 — asserting on raw order/size now pins that down.
+        assertEquals(4, results.size());
+        assertEquals(1L, results.get(0).getSampleCount());
+        assertEquals(2L, results.get(1).getSampleCount());
         assertEquals("Counter should reset to 1 once the window closes, not continue to 3",
-                1L, increments.get(2).getSampleCount());
-        assertEquals("One reset per window that closed (window 1 mid-stream, window 2 at end-of-stream)",
-                2, resets.size());
+                1L, results.get(2).getSampleCount());
+        assertEquals("Window 1's timer must not fire a stale reset after window 2 already opened",
+                0L, results.get(3).getSampleCount());
     }
 
     @Test
@@ -317,17 +315,20 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Real increments vs. close-timer resets (window 1 closes
-        // mid-stream, window 2 closes at the final end-of-stream watermark).
-        List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
-        List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
-
-        assertEquals(3, increments.size());
-        assertEquals(50.0, increments.get(1).getValue(), 0.0001);
+        // Window 1's close-timer must be cancelled when the +15s event rolls
+        // the window over early — otherwise it fires as a stale 0% right
+        // after window 2's real 100% and overwrites it (mirrors the deploy
+        // frequency bug: the live tile would show 0 instead of the correct
+        // in-progress rate for the newly opened window). So the only reset
+        // here is the genuine end-of-stream close of window 2 — asserting
+        // on raw order/size pins that down.
+        assertEquals(4, results.size());
+        assertEquals(50.0, results.get(1).getValue(), 0.0001);
         assertEquals("New window should restart at 1 failure / 1 total = 100%, not 2/3",
-                100.0, increments.get(2).getValue(), 0.0001);
-        assertEquals(1L, increments.get(2).getSampleCount());
-        assertEquals("One reset per window that closed", 2, resets.size());
+                100.0, results.get(2).getValue(), 0.0001);
+        assertEquals(1L, results.get(2).getSampleCount());
+        assertEquals("Window 1's timer must not fire a stale reset after window 2 already opened",
+                0L, results.get(3).getSampleCount());
     }
 
     @Test
@@ -403,6 +404,34 @@ public class DoraOperatorsTest {
 
         assertTrue("Different commit SHA should produce no lead time metric",
                 results.isEmpty());
+    }
+
+    @Test
+    public void testLeadTime_failedDeployDoesNotLeakStateOrMatchLaterCommit() throws Exception {
+        // Commit A builds, but its deploy fails (e.g. bad configmap). A fix
+        // ships as commit B, which builds and deploys successfully. Only B
+        // should produce a lead time sample — A's build-start entry must be
+        // cleaned up on DEPLOY_FAILED, not linger and (if commit SHAs were
+        // ever reused) wrongly pair with an unrelated later deploy.
+        CicdEvent buildA  = event("pipe-6", "svc-f", "BUILD_STARTED", "SUCCESS", base);
+        buildA.setCommitSha("sha-A");
+        CicdEvent deployFailA = event("pipe-6", "svc-f", "DEPLOY_FAILED", "FAILURE", base.plusMinutes(5));
+        deployFailA.setCommitSha("sha-A");
+
+        CicdEvent buildB  = event("pipe-6", "svc-f", "BUILD_STARTED", "SUCCESS", base.plusMinutes(10));
+        buildB.setCommitSha("sha-B");
+        CicdEvent deploySuccessB = event("pipe-6", "svc-f", "DEPLOY_SUCCESS", "SUCCESS", base.plusMinutes(25));
+        deploySuccessB.setCommitSha("sha-B");
+
+        List<MetricResult> results = new ArrayList<>();
+        DoraOperators.leadTime(env.fromCollection(
+                        List.of(buildA, deployFailA, buildB, deploySuccessB)))
+                     .executeAndCollect()
+                     .forEachRemaining(results::add);
+
+        assertEquals("Only commit B's successful deploy should produce a sample",
+                1, results.size());
+        assertEquals(15.0, results.get(0).getValue(), 1.0); // buildB -> deploySuccessB = 15 min
     }
 
     // ══════════════════════════════════════════════════════════════════

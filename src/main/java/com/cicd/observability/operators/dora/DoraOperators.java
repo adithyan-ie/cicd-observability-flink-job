@@ -1,5 +1,6 @@
 package com.cicd.observability.operators.dora;
 
+import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import org.apache.flink.api.common.functions.AggregateFunction;
@@ -48,7 +49,8 @@ public class DoraOperators {
     public static DataStream<MetricResult> leadTime(DataStream<CicdEvent> events) {
         return events
                 .filter(e -> "BUILD_STARTED".equals(e.getEventType())
-                          || "DEPLOY_SUCCESS".equals(e.getEventType()))
+                          || "DEPLOY_SUCCESS".equals(e.getEventType())
+                          || "DEPLOY_FAILED".equals(e.getEventType()))
                 .keyBy(CicdEvent::getPipelineId)
                 .process(new LeadTimeProcessFn());
     }
@@ -100,6 +102,15 @@ public class DoraOperators {
                             leadMins, 1);
                     out.collect(leadTimeMetric);
                 }
+
+            } else if ("DEPLOY_FAILED".equals(e.getEventType())) {
+                // This commit's deploy failed, so it will never receive a
+                // matching DEPLOY_SUCCESS — a fix ships as a new commit with
+                // its own BUILD_STARTED instead. Drop the orphaned entry
+                // rather than leaving it in state forever; no lead-time
+                // sample is emitted since this commit never reached a
+                // successful deploy.
+                buildStartTimes.remove(e.getCommitSha());
             }
         }
 
@@ -218,6 +229,19 @@ public class DoraOperators {
             long ts = event.getTimestampMs();
             Long currentWindowEnd = windowEnd.value();
 
+            if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
+                long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
+                if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
+                    // This event's own window has already closed per the
+                    // job-global watermark (e.g. another pipeline's future-
+                    // dated sentinel advanced it), even though this key's
+                    // own state hasn't caught up. Only the historical stream
+                    // (allowedLateness) should reflect it — see
+                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+                    return;
+                }
+            }
+
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
                 // Late event for an already-closed window — the live tile
                 // only reflects the window currently open; changeFailureRate()
@@ -228,6 +252,9 @@ public class DoraOperators {
             if (currentWindowEnd == null || ts >= currentWindowEnd) {
                 total.clear();
                 failed.clear();
+                if (currentWindowEnd != null) {
+                    ctx.timerService().deleteEventTimeTimer(currentWindowEnd - 1);
+                }
                 long nextWindowEnd = ((ts / windowMs) + 1) * windowMs;
                 windowEnd.update(nextWindowEnd);
                 ctx.timerService().registerEventTimeTimer(nextWindowEnd - 1);
@@ -254,6 +281,18 @@ public class DoraOperators {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
+            // A later event can roll the window over early (processElement)
+            // and register a new close-timer without this one having fired
+            // yet. When that happens this timer is stale — the window it
+            // was meant to close already closed early, and total/failed now
+            // belong to a newer window. Only reset if this timer still
+            // matches the window that's actually open, otherwise it would
+            // wipe out the new window's live rate with a stale 0%.
+            Long currentWindowEnd = windowEnd.value();
+            if (currentWindowEnd == null || timestamp != currentWindowEnd - 1) {
+                return;
+            }
+
             // Window closed — emit the reset itself so Postgres/Grafana show
             // 0% immediately, instead of the last window's rate sitting
             // there stale until the next deploy/failure happens.

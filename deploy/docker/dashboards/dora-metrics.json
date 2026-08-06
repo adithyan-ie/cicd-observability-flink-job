@@ -19,6 +19,19 @@
       }
     ]
   },
+  "templating": {
+    "list": [
+      {
+        "name": "allowed_lateness_hours",
+        "type": "constant",
+        "label": "Allowed lateness (hours)",
+        "description": "Must match ALLOWED_LATENESS in DeploymentFrequencyOperator.java (currently Time.hours(1)) — update this value by hand if that constant ever changes. Not auto-synced.",
+        "query": "1",
+        "current": { "text": "1", "value": "1" },
+        "hide": 2
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
@@ -58,12 +71,30 @@
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
-      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": { "unit": "percent" },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "points" },
+              { "id": "custom.pointSize", "value": 8 },
+              { "id": "custom.lineWidth", "value": 0 }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (live)' AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE_LIVE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
           "rawQuery": true
         }
       ]
@@ -90,12 +121,30 @@
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
-      "fieldConfig": { "defaults": { "unit": "short", "max": 100, "min": 0 }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "max": 100, "min": 0 },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "custom.drawStyle", "value": "points" },
+              { "id": "custom.pointSize", "value": 8 },
+              { "id": "custom.lineWidth", "value": 0 }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (live)' AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE_LIVE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "format": "time_series",
+          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
           "rawQuery": true
         }
       ]
@@ -111,7 +160,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band FROM cicd_metrics WHERE metric_type LIKE '%\\_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
+          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
           "rawQuery": true
         }
       ]
@@ -127,7 +176,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
+          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at, to_timestamp(window_end_ms / 1000) + interval '$allowed_lateness_hours hours' AS late_accepted_until FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
           "rawQuery": true
         }
       ]

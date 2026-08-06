@@ -1,5 +1,6 @@
 package com.cicd.observability.operators.health;
 
+import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
 import org.apache.flink.api.common.functions.AggregateFunction;
@@ -259,6 +260,19 @@ public class PipelineHealthOperator {
         public void processElement(CicdEvent event, Context ctx, Collector<MetricResult> out) throws Exception {
             long ts = event.getTimestampMs();
             Long currentWindowEnd = windowEnd.value();
+
+            if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
+                long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
+                if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
+                    // This event's own window has already closed per the
+                    // job-global watermark (e.g. another pipeline's future-
+                    // dated sentinel advanced it), even though this key's
+                    // own state hasn't caught up. Only the historical stream
+                    // (allowedLateness) should reflect it — see
+                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+                    return;
+                }
+            }
 
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
                 // Late event for an already-closed window — the live tile
