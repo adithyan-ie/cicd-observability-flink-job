@@ -2,8 +2,9 @@ package com.cicd.observability.operators.watermark;
 
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
+import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
 import java.time.LocalDateTime;
@@ -16,9 +17,19 @@ import java.time.LocalDateTime;
  * Applied directly on the post-source stream (before keyBy/routing), so the
  * watermark read here is the same event-time frontier that flows into every
  * downstream windowed operator. One row is upserted in Postgres (pipeline_id
- * "GLOBAL", sentinel window) each time the watermark advances — no timers or
- * keying needed, since a new watermark can only appear on the back of an
- * incoming element.
+ * "GLOBAL", sentinel window) whenever the watermark advances — checked both
+ * on every incoming element AND on a recurring processing-time timer (see
+ * WatermarkReporterFn). The timer is required: this operator otherwise only
+ * gets a chance to notice the watermark moving when a new CicdEvent happens
+ * to flow through it, so during any gap between events (or once the source
+ * backlog is fully drained) the reported value — and the "Current Watermark"
+ * dashboard panel — would sit frozen at whatever it was last time an element
+ * arrived, even though the watermark had actually kept advancing underneath.
+ *
+ * Keyed on a constant string rather than left unkeyed: Flink only allows
+ * registerProcessingTimeTimer on keyed streams. Every element still hashes
+ * to the same key, so — combined with parallelism 1 below — this remains a
+ * single instance receiving every element, same as before.
  *
  * Pinned to parallelism 1 deliberately. With source parallelism N > 1, a
  * forward/chained reporter would get N instances each wired 1:1 to one
@@ -38,25 +49,51 @@ public class WatermarkReporterOperator {
     private static final String GLOBAL_PIPELINE_ID = "GLOBAL";
     private static final String WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
+    // How often (processing time) to re-check the watermark even if no new
+    // element has arrived — see class javadoc.
+    private static final long POLL_INTERVAL_MS = 10_000;
+
     public static DataStream<MetricResult> report(DataStream<CicdEvent> events) {
         return events
+                .keyBy(e -> GLOBAL_PIPELINE_ID)
                 .process(new WatermarkReporterFn())
                 .name("watermark-reporter")
                 .setParallelism(1);
     }
 
-    static class WatermarkReporterFn extends ProcessFunction<CicdEvent, MetricResult> {
+    static class WatermarkReporterFn extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
 
         private transient long lastReportedWatermark;
+        private transient boolean pollTimerScheduled;
 
         @Override
         public void open(org.apache.flink.configuration.Configuration parameters) {
             lastReportedWatermark = Long.MIN_VALUE;
+            pollTimerScheduled = false;
         }
 
         @Override
         public void processElement(CicdEvent event, Context ctx, Collector<MetricResult> out) {
-            long watermark = ctx.timerService().currentWatermark();
+            maybeReport(ctx.timerService().currentWatermark(), out);
+            scheduleNextPoll(ctx.timerService());
+        }
+
+        @Override
+        public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) {
+            maybeReport(ctx.timerService().currentWatermark(), out);
+            ctx.timerService().registerProcessingTimeTimer(timestamp + POLL_INTERVAL_MS);
+        }
+
+        private void scheduleNextPoll(TimerService timerService) {
+            if (pollTimerScheduled) {
+                return;
+            }
+            pollTimerScheduled = true;
+            timerService.registerProcessingTimeTimer(
+                    timerService.currentProcessingTime() + POLL_INTERVAL_MS);
+        }
+
+        private void maybeReport(long watermark, Collector<MetricResult> out) {
             if (watermark == Long.MIN_VALUE || watermark == lastReportedWatermark) {
                 return;
             }

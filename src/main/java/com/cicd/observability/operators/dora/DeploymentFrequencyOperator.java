@@ -47,7 +47,7 @@ public class DeploymentFrequencyOperator {
     public static final OutputTag<CicdEvent> TRULY_LATE_TAG =
             new OutputTag<CicdEvent>("dora-truly-late-events") {};
 
-    private static final Time ALLOWED_LATENESS = Time.hours(1);
+    private static final Time ALLOWED_LATENESS = Time.hours(5);
 
     // ════════════════════════════════════════════════════════════════
     // Historical metric — 1-day tumbling window, default EventTimeTrigger

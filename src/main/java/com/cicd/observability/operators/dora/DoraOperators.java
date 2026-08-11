@@ -126,7 +126,7 @@ public class DoraOperators {
     // #3 — Change Failure Rate
     // ══════════════════════════════════════════════════════════════════
 
-    private static final Time CFR_ALLOWED_LATENESS = Time.hours(1);
+    private static final Time CFR_ALLOWED_LATENESS = Time.hours(5);
 
     /** CFR deploy events too late even for the allowed-lateness grace period. */
     public static final OutputTag<CicdEvent> CFR_TRULY_LATE_TAG =

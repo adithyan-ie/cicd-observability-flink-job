@@ -25,9 +25,9 @@
         "name": "allowed_lateness_hours",
         "type": "constant",
         "label": "Allowed lateness (hours)",
-        "description": "Must match ALLOWED_LATENESS in DeploymentFrequencyOperator.java (currently Time.hours(1)) — update this value by hand if that constant ever changes. Not auto-synced.",
-        "query": "1",
-        "current": { "text": "1", "value": "1" },
+        "description": "Must match the ALLOWED_LATENESS constants in DeploymentFrequencyOperator.java, DoraOperators.java (CFR_ALLOWED_LATENESS), and PipelineHealthOperator.java — all three are Time.hours(5) = 5h. Update this value by hand if any of those constants change. Not auto-synced.",
+        "query": "5",
+        "current": { "text": "5", "value": "5" },
         "hide": 2
       },
       {
@@ -62,6 +62,7 @@
     {
       "id": 1,
       "title": "Deployment Frequency (deploys/day)",
+      "description": "Plotted by event time (window_end), not by inserted_at — a fast backlog replay can write results for many different event-time days within the same few real-world minutes, which would otherwise bunch every point onto the same narrow slice of a real-time X-axis regardless of which simulated day it actually describes. This intentionally has no dashboard time-range filter, since 'window_end' and the picker's 'last 6 hours' are different clocks (event time vs wall-clock time).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -70,7 +71,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT to_timestamp(window_end_ms / 1000) AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms",
           "rawQuery": true
         }
       ]
@@ -78,6 +79,7 @@
     {
       "id": 2,
       "title": "Lead Time for Changes (minutes)",
+      "description": "Plotted by event time (window_end — the DEPLOY_SUCCESS timestamp for that commit), not inserted_at, for the same reason as Deployment Frequency: a fast backlog replay writes results for many different event-time moments within the same few real-world minutes.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -86,7 +88,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'LEAD_TIME_FOR_CHANGES' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT to_timestamp(window_end_ms / 1000) AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'LEAD_TIME_FOR_CHANGES' ORDER BY window_end_ms",
           "rawQuery": true
         }
       ]
@@ -94,6 +96,7 @@
     {
       "id": 3,
       "title": "Change Failure Rate (%)",
+      "description": "The (window close) series is plotted by event time (window_end) rather than inserted_at, same reason as Deployment Frequency — it's a real TumblingEventTimeWindow. The (live) series stays on inserted_at deliberately: CHANGE_FAILURE_RATE_LIVE upserts one row per pipeline under a fixed 1970-01-01 sentinel (see CFR_LIVE_WINDOW_MARKER), so window_end_ms is constant there and useless as an axis — inserted_at is the only real time signal that series has.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -120,7 +123,7 @@
         {
           "refId": "B",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT to_timestamp(window_end_ms / 1000) AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'CHANGE_FAILURE_RATE' ORDER BY window_end_ms",
           "rawQuery": true
         }
       ]
@@ -128,6 +131,7 @@
     {
       "id": 4,
       "title": "Mean Time to Recovery (minutes)",
+      "description": "Plotted by event time (window_end — the BUILD_SUCCESS/recovery timestamp), not inserted_at, same reason as Deployment Frequency: a fast backlog replay writes results for many different event-time moments within the same few real-world minutes.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -136,7 +140,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'MEAN_TIME_TO_RECOVERY' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT to_timestamp(window_end_ms / 1000) AS \"time\", value, pipeline_id AS metric FROM cicd_metrics WHERE metric_type = 'MEAN_TIME_TO_RECOVERY' ORDER BY window_end_ms",
           "rawQuery": true
         }
       ]
@@ -144,6 +148,7 @@
     {
       "id": 5,
       "title": "Pipeline Health Score",
+      "description": "The (window close) series is plotted by event time (window_end) rather than inserted_at, same reason as Deployment Frequency — it's a real 30-min TumblingEventTimeWindow. The (live) series stays on inserted_at deliberately: PIPELINE_HEALTH_SCORE_LIVE upserts one row per pipeline under a fixed 1970-01-01 sentinel (see LIVE_WINDOW_MARKER in PipelineHealthOperator), so window_end_ms is constant there and useless as an axis — inserted_at is the only real time signal that series has.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -170,7 +175,7 @@
         {
           "refId": "B",
           "format": "time_series",
-          "rawSql": "SELECT inserted_at AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE' AND $__timeFilter(inserted_at) ORDER BY inserted_at",
+          "rawSql": "SELECT to_timestamp(window_end_ms / 1000) AS \"time\", value, pipeline_id || ' (window close)' AS metric FROM cicd_metrics WHERE metric_type = 'PIPELINE_HEALTH_SCORE' ORDER BY window_end_ms",
           "rawQuery": true
         }
       ]
@@ -178,7 +183,7 @@
     {
       "id": 6,
       "title": "Live Metric Values",
-      "description": "window_start/window_end are computed, not stored — the live counter upserts one Postgres row per pipeline under a fixed 1970-01-01 sentinel (see LIVE_WINDOW_MARKER in DeploymentFrequencyOperator), so there's no real per-row window to select. These columns approximate the currently-open window by bucketing inserted_at into deployment_frequency_window_seconds-sized, epoch-aligned buckets — the same arithmetic LiveDeployCounter itself uses (ts / windowMs). Good enough to eyeball 'which window is live counting into right now', not a substitute for the Window History panel below.",
+      "description": "The live counter upserts one Postgres row per pipeline under a fixed 1970-01-01 sentinel (see LIVE_WINDOW_MARKER in DeploymentFrequencyOperator) — there's no per-row window_start/window_end to select, and a wall-clock-bucketed approximation of one was actively misleading (it doesn't reflect each pipeline's own event-time window, which only LiveDeployCounter's internal state actually knows). resets_after instead just shows the configured live-window duration (FlinkConfig.DEPLOYMENT_FREQUENCY_WINDOW, driven by the $deployment_frequency_window_seconds variable above — currently 1 day): each pipeline's count covers up to that much event-time and resets to 0 once the job-global watermark passes that far beyond this pipeline's own last reset point — not a fixed calendar boundary shared across pipelines. See the Window History panel below for real, per-row window boundaries.",
       "type": "table",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -187,7 +192,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band, to_timestamp(floor(extract(epoch FROM inserted_at) / $deployment_frequency_window_seconds) * $deployment_frequency_window_seconds) AS window_start, to_timestamp(floor(extract(epoch FROM inserted_at) / $deployment_frequency_window_seconds) * $deployment_frequency_window_seconds + $deployment_frequency_window_seconds) AS window_end FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
+          "rawSql": "SELECT DISTINCT ON (metric_type, pipeline_id) inserted_at AS \"time\", metric_type, pipeline_id, service_name, value, performance_band, ($deployment_frequency_window_seconds || ' seconds')::interval AS resets_after FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY_LIVE' ORDER BY metric_type, pipeline_id, inserted_at DESC",
           "rawQuery": true
         }
       ]

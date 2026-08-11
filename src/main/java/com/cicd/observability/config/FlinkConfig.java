@@ -86,7 +86,7 @@ public class FlinkConfig {
     // computeLive() javadoc).
     public static final Time DEPLOYMENT_FREQUENCY_WINDOW = Time.days(1);
     public static final Time CHANGE_FAILURE_RATE_WINDOW  = Time.days(1);
-    public static final Time PIPELINE_HEALTH_WINDOW      = Time.minutes(10);
+    public static final Time PIPELINE_HEALTH_WINDOW      = Time.minutes(30);
 
     // ── CEP ────────────────────────────────────────────────────────────
     public static final Duration CEP_PATTERN_WINDOW = Duration.ofMinutes(10);

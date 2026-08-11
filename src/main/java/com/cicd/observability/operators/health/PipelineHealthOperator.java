@@ -49,7 +49,7 @@ import java.time.ZoneOffset;
  */
 public class PipelineHealthOperator {
 
-    private static final Time ALLOWED_LATENESS = Time.hours(1);
+    private static final Time ALLOWED_LATENESS = Time.hours(5);
 
     /** Health-stage events too late even for the allowed-lateness grace period. */
     public static final OutputTag<CicdEvent> TRULY_LATE_TAG =
