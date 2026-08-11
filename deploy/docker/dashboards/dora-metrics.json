@@ -195,7 +195,7 @@
     {
       "id": 7,
       "title": "Deployment Frequency — Window History",
-      "description": "window_alive_until = window_end + ALLOWED_LATENESS: how long (in watermark time, not event time) this window's state stays open for late corrections after it first fires. It does NOT extend which event_timestamps belong to this window — that's always [window_start, window_end), for on-time and late events alike. To test truly-late handling: push an event timestamped inside [window_start, window_end) only after the Current Watermark panel above already reads past this row's window_alive_until.",
+      "description": "window_alive_until = window_end + ALLOWED_LATENESS: how long (in watermark time, not event time) this window's state stays open for late corrections after it first fires. It does NOT extend which event_timestamps belong to this window — that's always [window_start, window_end), for on-time and late events alike. is_window_closed compares window_alive_until against the actual job-global watermark (same value as the Current Watermark panel above, joined live) rather than wall-clock now() — true once that watermark has passed window_alive_until, meaning no more late corrections are possible and this row is final. To test truly-late handling: push an event timestamped inside [window_start, window_end) only after is_window_closed reads true for this row.",
       "type": "table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -204,7 +204,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT to_timestamp(window_start_ms / 1000) AS window_start, to_timestamp(window_end_ms / 1000) AS window_end, pipeline_id, service_name, value AS deploys_per_day, sample_count AS deploy_count, inserted_at AS computed_at, to_timestamp(window_end_ms / 1000) + interval '$allowed_lateness_hours hours' AS window_alive_until FROM cicd_metrics WHERE metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY window_end_ms DESC LIMIT 20",
+          "rawSql": "WITH wm AS (SELECT value AS watermark_ms FROM cicd_metrics WHERE metric_type = 'WATERMARK' AND pipeline_id = 'GLOBAL' ORDER BY inserted_at DESC LIMIT 1) SELECT to_timestamp(m.window_start_ms / 1000) AS window_start, to_timestamp(m.window_end_ms / 1000) AS window_end, m.pipeline_id, m.service_name, m.value AS deploys_per_day, m.sample_count AS deploy_count, m.inserted_at AS computed_at, to_timestamp(m.window_end_ms / 1000) + interval '$allowed_lateness_hours hours' AS window_alive_until, COALESCE(wm.watermark_ms > (m.window_end_ms + $allowed_lateness_hours * 3600000), false) AS is_window_closed FROM cicd_metrics m LEFT JOIN wm ON true WHERE m.metric_type = 'DEPLOYMENT_FREQUENCY' ORDER BY m.window_end_ms DESC LIMIT 20",
           "rawQuery": true
         }
       ]
@@ -212,7 +212,7 @@
     {
       "id": 9,
       "title": "Truly-Late Events — All Metrics (per event detail)",
-      "description": "Every event that missed its metric's allowed-lateness grace period, across all three windowed metrics that side-output truly-late data (DeploymentFrequencyOperator, DoraOperators.changeFailureRate, PipelineHealthOperator) — see TrulyLateAuditOperator. source_metric identifies which metric's window the event was too late for; it's the same underlying cicd_alerts LATE_EVENT audit trail regardless of event_type, so use source_metric (not event_type) to filter by metric.",
+      "description": "Every event that missed its metric's allowed-lateness grace period, across all three windowed metrics that side-output truly-late data (DeploymentFrequencyOperator, DoraOperators.changeFailureRate, PipelineHealthOperator) — see TrulyLateAuditOperator. source_metric identifies which metric's window the event was too late for; it's the same underlying cicd_alerts LATE_EVENT audit trail regardless of event_type, so use source_metric (not event_type) to filter by metric. reason is computed here from event_time vs watermark_time (not stored by the job) — a one-line summary of how far behind the watermark the event was when it arrived.",
       "type": "table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 38 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -221,7 +221,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT inserted_at AS computed_at, payload->>'source_metric' AS source_metric, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
+          "rawSql": "SELECT inserted_at AS computed_at, payload->>'source_metric' AS source_metric, payload->>'event_id' AS event_id, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, payload->>'event_type' AS event_type, payload->>'event_time' AS event_time, payload->>'watermark_time' AS watermark_time, CASE WHEN payload->>'watermark_time' IS NULL THEN 'No watermark had been reported yet when this event was audited' ELSE 'Arrived ' || ((payload->>'watermark_time')::timestamptz - (payload->>'event_time')::timestamptz)::text || ' behind the watermark — past this window''s allowed-lateness grace period' END AS reason FROM cicd_alerts WHERE alert_type = 'LATE_EVENT' ORDER BY inserted_at DESC LIMIT 20",
           "rawQuery": true
         }
       ]
