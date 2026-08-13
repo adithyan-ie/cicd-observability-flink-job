@@ -1,0 +1,111 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI/CD Observability — Flink Job (EC2 #3)
+#
+# Services: flink-jm (JobManager, Application Mode) + flink-tm-1 (TaskManager).
+# Both stay on this ONE instance and talk to each other over its local docker
+# network exactly as in the original single-host docker-compose.yml — no
+# cross-EC2 networking needed between JM and TM. What crosses EC2 boundaries
+# is JM/TM → Kafka, JM/TM → Postgres, and JM/TM → Grafana, all on the
+# data-layer instance (EC2 #2), addressed via DATA_LAYER_HOST below.
+#
+# Run this on its own EC2 instance. Clone the full repo onto this instance
+# first — the image is built from the Dockerfile at the repo root:
+#   git clone <this-repo>
+#   cd deploy/AWS/flink-job
+#   cp .env.example .env   # then edit DATA_LAYER_HOST — see below
+#   docker compose up -d --build
+#
+# ── Cross-EC2 networking ──────────────────────────────────────────────────
+# DATA_LAYER_HOST must be the SAME address the data-layer instance advertises
+# itself as (its own DATA_LAYER_HOST in deploy/AWS/data-layer/.env) — private
+# IP if same VPC, public/Elastic IP otherwise.
+#
+# This instance only makes OUTBOUND connections to the data layer (Kafka
+# 9092, Postgres 5432, Grafana 3000) — it doesn't need any inbound security
+# group rule from the data-layer or jenkins instances. Only open inbound on
+# this instance's security group for the Flink Web UI (8082) to your own IP,
+# for monitoring/debugging.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+x-flink-env: &flink-env
+  # Kafka — data-layer EC2, PLAINTEXT listener (see data-layer/docker-compose.yml)
+  KAFKA_BOOTSTRAP:        ${DATA_LAYER_HOST}:9092
+  KAFKA_TOPIC_INPUT:      cicd-events
+  KAFKA_TOPIC_METRICS:    pipeline-metrics
+  KAFKA_TOPIC_HEALTH:     pipeline-health
+  KAFKA_TOPIC_ALERTS:     failure-pattern-alerts
+  KAFKA_TOPIC_TIMEOUTS:   pattern-timeouts
+  KAFKA_TOPIC_LATE:       late-events
+  # Postgres — data-layer EC2
+  PG_URL:      jdbc:postgresql://${DATA_LAYER_HOST}:5432/cicd_metrics
+  PG_USER:     flink
+  PG_PASSWORD: admin
+  # Grafana — data-layer EC2 (GrafanaSink posts annotations here)
+  GRAFANA_URL:     http://${DATA_LAYER_HOST}:3000
+  GRAFANA_API_KEY: changeme
+  # Flink
+  FLINK_PARALLELISM: "4"
+  JOB_MANAGER_RPC_ADDRESS: flink-jm
+
+services:
+
+  # ── Flink JobManager ───────────────────────────────────────────────────────
+  flink-jm:
+    image: cicd-flink-analytics:latest
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    container_name: flink-jm
+    restart: unless-stopped
+    command: ["standalone-job",
+              "--job-classname", "com.cicd.observability.jobs.PipelineObservabilityJob"]
+    ports:
+      - "8082:8081"    # Flink Web UI → http://<this-instance>:8082
+    environment:
+      <<: *flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        parallelism.default: 4
+        jobmanager.memory.process.size: 1024m
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - flink-net
+
+  # ── Flink TaskManager ──────────────────────────────────────────────────────
+  flink-tm-1:
+    image: cicd-flink-analytics:latest
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    container_name: flink-tm-1
+    restart: unless-stopped
+    depends_on:
+      flink-jm:
+        condition: service_healthy
+    command: ["taskmanager"]
+    environment:
+      <<: *flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jm
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 1280m
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-rocksdb-1:/tmp/rocksdb
+    networks:
+      - flink-net
+
+networks:
+  flink-net:
+    driver: bridge
+
+volumes:
+  flink-checkpoints:    # shared between JM and TM for checkpoint access
+  flink-rocksdb-1:      # RocksDB state for the TaskManager

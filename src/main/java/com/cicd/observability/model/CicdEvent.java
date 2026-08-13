@@ -29,6 +29,19 @@ public class CicdEvent implements Serializable {
     /** Epoch-ms assigned by the deserialiser from event_timestamp string. */
     private long timestampMs;
 
+    /**
+     * Epoch-ms Flink wall-clock time at the moment this record was
+     * deserialised (i.e. actually picked up off the Kafka consumer),
+     * set by CicdEventDeserializer via System.currentTimeMillis() —
+     * never from the JSON payload, so a buggy/malicious producer can't
+     * forge or omit it. Distinct from event_timestamp, which is the
+     * simulated/business event time used for watermarks and windowing
+     * (and can be far in the past or future by design, e.g. load-test
+     * data spread across days). inserted_at - this = Flink's own
+     * processing latency once persisted in cicd_metrics.
+     */
+    private long flinkReceivedAtMs;
+
     public CicdEvent() {}
 
     public String getEventId()           { return eventId; }
@@ -57,6 +70,8 @@ public class CicdEvent implements Serializable {
     public void   setStatus(String v)    { this.status = v; }
     public long   getTimestampMs()       { return timestampMs; }
     public void   setTimestampMs(long v) { this.timestampMs = v; }
+    public long   getFlinkReceivedAtMs()          { return flinkReceivedAtMs; }
+    public void   setFlinkReceivedAtMs(long v)    { this.flinkReceivedAtMs = v; }
 
     public boolean isFailure() { return "FAILURE".equalsIgnoreCase(status); }
     public boolean isSuccess() { return "SUCCESS".equalsIgnoreCase(status); }

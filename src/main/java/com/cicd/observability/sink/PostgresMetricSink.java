@@ -11,6 +11,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
@@ -35,6 +37,7 @@ import java.time.ZoneOffset;
  *      sample_count     BIGINT,
  *      detail           TEXT,
  *      computed_at_ms   BIGINT,
+ *      flink_received_at TIMESTAMPTZ,
  *      inserted_at      TIMESTAMPTZ   DEFAULT NOW()
  *  );
  *
@@ -63,16 +66,17 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
     private static final String INSERT_SQL =
             "INSERT INTO cicd_metrics " +
             "(metric_type, pipeline_id, service_name, window_start_ms, window_end_ms, " +
-            " value, performance_band, sample_count, detail, computed_at_ms) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            " value, performance_band, sample_count, detail, computed_at_ms, flink_received_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
             "ON CONFLICT (metric_type, pipeline_id, window_start_ms, window_end_ms) DO UPDATE SET " +
-            "  service_name     = EXCLUDED.service_name, " +
-            "  value            = EXCLUDED.value, " +
-            "  performance_band = EXCLUDED.performance_band, " +
-            "  sample_count     = EXCLUDED.sample_count, " +
-            "  detail           = EXCLUDED.detail, " +
-            "  computed_at_ms   = EXCLUDED.computed_at_ms, " +
-            "  inserted_at      = NOW()";
+            "  service_name         = EXCLUDED.service_name, " +
+            "  value                = EXCLUDED.value, " +
+            "  performance_band     = EXCLUDED.performance_band, " +
+            "  sample_count         = EXCLUDED.sample_count, " +
+            "  detail               = EXCLUDED.detail, " +
+            "  computed_at_ms       = EXCLUDED.computed_at_ms, " +
+            "  flink_received_at    = EXCLUDED.flink_received_at, " +
+            "  inserted_at          = NOW()";
 
     private final String url;
     private final String user;
@@ -122,6 +126,17 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
             statement.setLong(8,    metric.getSampleCount());
             statement.setString(9,  metric.getDetail());
             statement.setLong(10,   metric.getComputedAtMs());
+            // 0 means "unset" (see MetricResult.flinkReceivedAtMs) — store
+            // NULL rather than epoch 0 (1970-01-01), so latency queries
+            // against this column don't get a bogus multi-decade value for
+            // those rows. Timestamp (not OffsetDateTime) so the JDBC driver
+            // writes it as an instant, independent of session timezone —
+            // correct for a TIMESTAMPTZ column either way.
+            if (metric.getFlinkReceivedAtMs() == 0) {
+                statement.setNull(11, Types.TIMESTAMP_WITH_TIMEZONE);
+            } else {
+                statement.setTimestamp(11, new Timestamp(metric.getFlinkReceivedAtMs()));
+            }
             statement.executeUpdate();
 
             LOG.debug("Persisted metric: type={} pipeline={} value={}",

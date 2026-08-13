@@ -14,8 +14,22 @@ CREATE TABLE IF NOT EXISTS cicd_metrics (
     sample_count     BIGINT,
     detail           TEXT,
     computed_at_ms   BIGINT,
+    -- Wall-clock time Flink deserialised the source event(s) for this row
+    -- (CicdEvent.flinkReceivedAtMs) — NULL when unknown. Same type as
+    -- inserted_at so latency is a direct interval subtraction:
+    -- inserted_at - flink_received_at gives Flink's own processing
+    -- latency (excludes Kafka consumer lag/backlog catch-up); see
+    -- PostgresMetricSink.
+    flink_received_at TIMESTAMPTZ,
     inserted_at      TIMESTAMPTZ      DEFAULT NOW()
 );
+
+-- Existing deployments created before this column existed (or with earlier
+-- versions of it: BIGINT-epoch-ms, then the Kafka-CreateTime-based
+-- source_generated_at).
+ALTER TABLE cicd_metrics DROP COLUMN IF EXISTS source_generated_at_ms;
+ALTER TABLE cicd_metrics DROP COLUMN IF EXISTS source_generated_at;
+ALTER TABLE cicd_metrics ADD COLUMN IF NOT EXISTS flink_received_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_cicd_metrics_type_pipeline
     ON cicd_metrics (metric_type, pipeline_id);

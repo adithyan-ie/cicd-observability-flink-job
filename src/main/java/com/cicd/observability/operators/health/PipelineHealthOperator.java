@@ -3,6 +3,7 @@ package com.cicd.observability.operators.health;
 import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
+import com.cicd.observability.operators.SourceTiming;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.state.ValueState;
@@ -126,11 +127,15 @@ public class PipelineHealthOperator {
         // Deploy
         long deployTotal = 0, deploySuccess = 0;
         String serviceName = "";
+        // Earliest Flink-received time among this window's events — see
+        // SourceTiming and MetricResult.flinkReceivedAtMs.
+        long minFlinkReceivedAtMs = 0;
     }
 
     /** Shared by both streams so the live and historical scores can never drift apart. */
     private static void accumulate(HealthAcc acc, CicdEvent e) {
         acc.serviceName = e.getServiceName();
+        acc.minFlinkReceivedAtMs = SourceTiming.earliest(acc.minFlinkReceivedAtMs, e.getFlinkReceivedAtMs());
         String et = e.getEventType();
 
         if (et != null) {
@@ -179,6 +184,7 @@ public class PipelineHealthOperator {
         MetricResult r = new MetricResult(type, pipelineId, acc.serviceName,
                 windowStart, windowEnd, score, totalEvents);
 
+        r.setFlinkReceivedAtMs(acc.minFlinkReceivedAtMs);
         r.setDetail(String.format(
                 "{\"build\":%.1f,\"test\":%.1f,\"sonar\":%.1f,\"package\":%.1f,\"deploy\":%.1f}",
                 buildRate, testRate, sonarRate, pkgRate, deployRate));
@@ -207,6 +213,7 @@ public class PipelineHealthOperator {
             a.sonarTotal   += b.sonarTotal;   a.sonarSuccess  += b.sonarSuccess;
             a.pkgTotal     += b.pkgTotal;     a.pkgSuccess    += b.pkgSuccess;
             a.deployTotal  += b.deployTotal;  a.deploySuccess += b.deploySuccess;
+            a.minFlinkReceivedAtMs = SourceTiming.earliest(a.minFlinkReceivedAtMs, b.minFlinkReceivedAtMs);
             return a;
         }
     }

@@ -149,6 +149,11 @@ public class FlinkConfig {
         cpCfg.setExternalizedCheckpointCleanup(
                 CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 
+        // Emit a synthetic LatencyMarker from each source every 1s, timestamped
+        // at injection. Downstream operators report marker-arrival latency to
+        // the metrics reporter — see latencyTracking.* in Flink's web UI/REST API.
+        env.getConfig().setLatencyTrackingInterval(1000);
+
         return env;
     }
 
@@ -173,7 +178,7 @@ public class FlinkConfig {
                 .setTopics(TOPIC_CICD_EVENTS)
                 .setGroupId(CONSUMER_GROUP)
                 .setStartingOffsets(OffsetsInitializer.earliest())
-                .setValueOnlyDeserializer(new CicdEventDeserializer())
+                .setDeserializer(new CicdEventDeserializer())
                 .setProperties(props)
                 .build();
     }

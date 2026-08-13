@@ -230,6 +230,40 @@
           "rawQuery": true
         }
       ]
+    },
+    {
+      "id": 11,
+      "title": "Flink Processing Latency (ms)",
+      "description": "Flink's own processing latency: inserted_at - flink_received_at, per metric_type, bucketed by minute. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()) — see SourceTiming.earliest() for how it's chosen when a metric result folds multiple events. Unlike a Kafka-CreateTime-based measure, this excludes consumer lag/backlog catch-up time, isolating deserialize -> window/compute -> sink latency. Plotted by inserted_at (real wall-clock arrival time, not event time) since this measures pipeline throughput/lag, not a business metric — unlike the DORA panels above, a real-time X-axis is correct here. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than shown as a bogus multi-decade latency.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 18, "x": 0, "y": 48 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('minute', inserted_at) AS \"time\", AVG(EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS value, metric_type AS metric FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at) GROUP BY 1, metric_type ORDER BY 1",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Flink Processing Latency — P95 (ms)",
+      "description": "95th-percentile Flink processing latency (inserted_at - flink_received_at) across all metric types, within the dashboard's selected time range.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 48 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS p95_latency_ms FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at)",
+          "rawQuery": true
+        }
+      ]
     }
   ],
   "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",

@@ -15,7 +15,7 @@ taskmanager.memory.process.size: 2048m
 taskmanager.numberOfTaskSlots: 4
 
 # Parallelism default — override via FLINK_PARALLELISM env var
-parallelism.default: 2
+parallelism.default: 4
 
 # ── Java 17 module access ─────────────────────────────────────────────────────
 # Kryo/Chill's fallback serializers (e.g. ArraysAsListSerializer) reflectively

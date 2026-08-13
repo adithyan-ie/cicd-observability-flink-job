@@ -198,7 +198,7 @@ services:
       <<: *flink-env
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jm
-        parallelism.default: 2
+        parallelism.default: 4
         jobmanager.memory.process.size: 1024m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
@@ -214,7 +214,7 @@ services:
   # ── Flink TaskManager ──────────────────────────────────────────────────────
   # Role: "taskmanager"
   #   - Registers with JobManager at flink-jm:6123
-  #   - Provides 4 task slots (numberOfTaskSlots: 4) — enough for parallelism=2
+  #   - Provides 4 task slots (numberOfTaskSlots: 4) — enough for parallelism=4
   #   - Sole TaskManager for local dev: executes ALL operator tasks
   #     (EventRouter, DORA, PipelineHealth, LateEvent, CEP/FailurePattern)
   #   - Maintains RocksDB state for MapState/ValueState operators

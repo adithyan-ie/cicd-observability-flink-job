@@ -46,6 +46,12 @@ public class MetricResult implements Serializable {
     private long       sampleCount;
     private String     detail;            // JSON blob for complex results
     private long       computedAtMs;
+    // Earliest CicdEvent.flinkReceivedAtMs among the event(s) that produced
+    // this result (min, for windowed/aggregated metrics — see SourceTiming)
+    // — 0 if unknown. inserted_at - this = Flink's own processing latency
+    // once persisted in cicd_metrics: time from the FIRST relevant event
+    // being deserialised by Flink to this result landing.
+    private long       flinkReceivedAtMs;
 
     public MetricResult() {
         this.computedAtMs = System.currentTimeMillis();
@@ -119,6 +125,8 @@ public class MetricResult implements Serializable {
     public void    setDetail(String v)           { this.detail = v; }
     public long    getComputedAtMs()             { return computedAtMs; }
     public void    setComputedAtMs(long v)       { this.computedAtMs = v; }
+    public long    getFlinkReceivedAtMs()            { return flinkReceivedAtMs; }
+    public void    setFlinkReceivedAtMs(long v)      { this.flinkReceivedAtMs = v; }
 
     @Override
     public String toString() {

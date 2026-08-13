@@ -1,0 +1,68 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI/CD Observability — Jenkins (EC2 #1)
+#
+# Services:
+#   jenkins  — CI server; its pipeline jobs are the ones producing the
+#              stageEvent() / stageEventFailure() JSON events this whole
+#              system observes (see CicdEventDeserializer's javadoc).
+#   kcat     — Kafka CLI, co-located with Jenkins so a pipeline stage can
+#              `docker exec kcat kafka-console-producer ...` (or
+#              `docker exec kcat kcat -P ...`) to push an event without
+#              needing a Kafka client installed on the Jenkins container
+#              itself. Only works because kcat is on the SAME host as
+#              Jenkins — that's why it moved here instead of staying next
+#              to Kafka (unlike the original single-host docker-compose.yml,
+#              Jenkins can no longer `docker exec` into a container running
+#              on a different EC2).
+#
+# Fully self-contained — unlike data-layer/flink-job, this stack needs
+# nothing else from the repo at runtime, so you can copy just this folder
+# to the instance if you prefer:
+#   cd deploy/AWS/jenkins
+#   cp .env.example .env   # then edit DATA_LAYER_HOST — see below
+#   docker compose up -d
+#
+# ── Cross-EC2 networking ──────────────────────────────────────────────────
+# DATA_LAYER_HOST must match the data-layer instance's own DATA_LAYER_HOST
+# (deploy/AWS/data-layer/.env) — private IP if same VPC, public/Elastic IP
+# otherwise. kcat uses it as its Kafka bootstrap server.
+#
+# This instance only makes an OUTBOUND connection to the data layer's Kafka
+# (port 9092). Its security group only needs an inbound rule for Jenkins'
+# own UI (8080) from your IP — nothing needs to reach in from the other
+# two instances.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Jenkins ────────────────────────────────────────────────────────────────
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    restart: unless-stopped
+    ports:
+      - "8080:8080"    # http://<this-instance>:8080
+      - "50000:50000"  # inbound agent port, if you attach build agents later
+    volumes:
+      - jenkins-data:/var/jenkins_home
+    networks:
+      - jenkins-net
+
+  # ── kcat — Kafka CLI, used by Jenkins pipeline stages to push events ───────
+  kcat:
+    image: confluentinc/cp-kcat:latest
+    container_name: kcat
+    restart: unless-stopped
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      # Data-layer EC2's Kafka PLAINTEXT listener — see data-layer/docker-compose.yml
+      KCAT_BROKERS: ${DATA_LAYER_HOST}:9092
+    networks:
+      - jenkins-net
+
+networks:
+  jenkins-net:
+    driver: bridge
+
+volumes:
+  jenkins-data:

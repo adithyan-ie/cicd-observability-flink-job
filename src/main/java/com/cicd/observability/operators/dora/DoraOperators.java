@@ -3,6 +3,7 @@ package com.cicd.observability.operators.dora;
 import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
+import com.cicd.observability.operators.SourceTiming;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
@@ -65,12 +66,16 @@ public class DoraOperators {
          * Java Map in memory, so it survives job restarts automatically.
          */
         private transient MapState<String, Long> buildStartTimes;
+        /** Flink-received time (CicdEvent.flinkReceivedAtMs) of the BUILD_STARTED event, keyed by commitSha — see MetricResult.flinkReceivedAtMs. */
+        private transient MapState<String, Long> buildStartFlinkReceivedAt;
       //  private transient ValueState<List<Double>> leadTimeSamples;
 
         @Override
         public void open(Configuration cfg) {
             buildStartTimes = getRuntimeContext().getMapState(
                     new MapStateDescriptor<>("build-start-times", Types.STRING, Types.LONG));
+            buildStartFlinkReceivedAt = getRuntimeContext().getMapState(
+                    new MapStateDescriptor<>("build-start-flink-received-at", Types.STRING, Types.LONG));
 //            leadTimeSamples = getRuntimeContext().getState(
 //                    new ValueStateDescriptor<>("lead-time-samples",
 //                            Types.LIST(Types.DOUBLE)));
@@ -83,6 +88,7 @@ public class DoraOperators {
                 // Store the timestamp keyed by commitSha so we can match
                 // it when the deploy event for the same commit arrives.
                 buildStartTimes.put(e.getCommitSha(), e.getTimestampMs());
+                buildStartFlinkReceivedAt.put(e.getCommitSha(), e.getFlinkReceivedAtMs());
 
             } else if ("DEPLOY_SUCCESS".equals(e.getEventType())) {
                 Long startMs = buildStartTimes.get(e.getCommitSha());
@@ -92,7 +98,9 @@ public class DoraOperators {
 //                    if (samples == null) samples = new ArrayList<>();
 //                    samples.add(leadMins);
 //                    leadTimeSamples.update(samples);
+                    Long startFlinkReceivedAt = buildStartFlinkReceivedAt.get(e.getCommitSha());
                     buildStartTimes.remove(e.getCommitSha());
+                    buildStartFlinkReceivedAt.remove(e.getCommitSha());
 
                     // Emit a rolling sample for Grafana dashboards
                     MetricResult leadTimeMetric = new MetricResult(
@@ -101,6 +109,9 @@ public class DoraOperators {
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
                             leadMins, 1);
+                    // BUILD_STARTED's receive time, not DEPLOY_SUCCESS's —
+                    // see SourceTiming javadoc on why the earlier event is used.
+                    leadTimeMetric.setFlinkReceivedAtMs(startFlinkReceivedAt != null ? startFlinkReceivedAt : 0);
                     out.collect(leadTimeMetric);
                 }
 
@@ -112,6 +123,7 @@ public class DoraOperators {
                 // sample is emitted since this commit never reached a
                 // successful deploy.
                 buildStartTimes.remove(e.getCommitSha());
+                buildStartFlinkReceivedAt.remove(e.getCommitSha());
             }
         }
 
@@ -154,6 +166,9 @@ public class DoraOperators {
     static class CfrAcc {
         long total = 0, failed = 0;
         String serviceName = "";
+        // Earliest Flink-received time among this window's events — see
+        // SourceTiming and MetricResult.flinkReceivedAtMs.
+        long minFlinkReceivedAtMs = 0;
     }
 
     static class CfrAgg implements AggregateFunction<CicdEvent, CfrAcc, CfrAcc> {
@@ -164,6 +179,7 @@ public class DoraOperators {
             acc.total++;
             if ("DEPLOY_FAILED".equals(e.getEventType()) || e.isFailure()) acc.failed++;
             acc.serviceName = e.getServiceName();
+            acc.minFlinkReceivedAtMs = SourceTiming.earliest(acc.minFlinkReceivedAtMs, e.getFlinkReceivedAtMs());
             return acc;
         }
 
@@ -173,6 +189,7 @@ public class DoraOperators {
         public CfrAcc merge(CfrAcc a, CfrAcc b) {
             a.total  += b.total;
             a.failed += b.failed;
+            a.minFlinkReceivedAtMs = SourceTiming.earliest(a.minFlinkReceivedAtMs, b.minFlinkReceivedAtMs);
             return a;
         }
     }
@@ -184,11 +201,13 @@ public class DoraOperators {
                             Iterable<CfrAcc> elems, Collector<MetricResult> out) {
             CfrAcc acc = elems.iterator().next();
             double cfr = acc.total == 0 ? 0 : (acc.failed * 100.0 / acc.total);
-            out.collect(new MetricResult(
+            MetricResult r = new MetricResult(
                     MetricResult.MetricType.CHANGE_FAILURE_RATE,
                     pipelineId, acc.serviceName,
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
-                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(), cfr, acc.total));
+                    LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(), cfr, acc.total);
+            r.setFlinkReceivedAtMs(acc.minFlinkReceivedAtMs);
+            out.collect(r);
         }
     }
 
@@ -220,6 +239,7 @@ public class DoraOperators {
         private transient ValueState<Long> failed;
         private transient ValueState<Long> windowEnd;
         private transient ValueState<String> serviceName;
+        private transient ValueState<Long> lastFlinkReceivedAtMs;
 
         LiveCfrCounter(long windowMs) { this.windowMs = windowMs; }
 
@@ -229,6 +249,8 @@ public class DoraOperators {
             failed    = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-failed", Types.LONG));
             windowEnd = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-window-end", Types.LONG));
             serviceName = getRuntimeContext().getState(new ValueStateDescriptor<>("live-cfr-service-name", Types.STRING));
+            lastFlinkReceivedAtMs = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("live-cfr-flink-received-at", Types.LONG));
         }
 
         @Override
@@ -278,12 +300,15 @@ public class DoraOperators {
 
             double cfr = failedCount * 100.0 / totalCount;
             serviceName.update(event.getServiceName());
+            lastFlinkReceivedAtMs.update(event.getFlinkReceivedAtMs());
 
-            out.collect(new MetricResult(
+            MetricResult r = new MetricResult(
                     MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE,
                     event.getPipelineId(), event.getServiceName(),
                     CFR_LIVE_WINDOW_MARKER, CFR_LIVE_WINDOW_MARKER,
-                    cfr, totalCount));
+                    cfr, totalCount);
+            r.setFlinkReceivedAtMs(event.getFlinkReceivedAtMs());
+            out.collect(r);
         }
 
         @Override
@@ -330,11 +355,15 @@ public class DoraOperators {
 
         /** Flink ValueState — stores the timestamp of the last BUILD_FAILED event. */
         private transient ValueState<Long> failureStartMs;
+        /** Flink-received time (CicdEvent.flinkReceivedAtMs) of that BUILD_FAILED event — see MetricResult.flinkReceivedAtMs. */
+        private transient ValueState<Long> failureStartFlinkReceivedAtMs;
 
         @Override
         public void open(Configuration cfg) {
             failureStartMs = getRuntimeContext().getState(
                     new ValueStateDescriptor<>("failure-start-ms", Types.LONG));
+            failureStartFlinkReceivedAtMs = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("failure-start-flink-received-at-ms", Types.LONG));
         }
 
         @Override
@@ -343,19 +372,26 @@ public class DoraOperators {
             if ("BUILD_FAILED".equals(e.getEventType())) {
                 // Record when the failure started
                 failureStartMs.update(e.getTimestampMs());
+                failureStartFlinkReceivedAtMs.update(e.getFlinkReceivedAtMs());
 
             } else if ("BUILD_SUCCESS".equals(e.getEventType())) {
                 Long startMs = failureStartMs.value();
                 if (startMs != null) {
                     double mttrMins = (e.getTimestampMs() - startMs) / 60_000.0;
+                    Long startFlinkReceivedAt = failureStartFlinkReceivedAtMs.value();
                     failureStartMs.clear();
+                    failureStartFlinkReceivedAtMs.clear();
 
-                    out.collect(new MetricResult(
+                    MetricResult r = new MetricResult(
                             MetricResult.MetricType.MEAN_TIME_TO_RECOVERY,
                             e.getPipelineId(), e.getServiceName(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
-                            mttrMins, 1));
+                            mttrMins, 1);
+                    // BUILD_FAILED's receive time, not BUILD_SUCCESS's — see
+                    // SourceTiming javadoc on why the earlier event is used.
+                    r.setFlinkReceivedAtMs(startFlinkReceivedAt != null ? startFlinkReceivedAt : 0);
+                    out.collect(r);
                 }
             }
         }

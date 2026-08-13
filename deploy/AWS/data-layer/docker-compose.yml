@@ -1,0 +1,162 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI/CD Observability — Data Layer (EC2 #2)
+#
+# Services: kafka (KRaft), kafka-ui, postgres, grafana.
+#
+# Run this on its own EC2 instance. Clone the full repo onto this instance
+# first — the volume mounts below (init.sql, Grafana provisioning) resolve
+# relative to this file's location in the repo:
+#   git clone <this-repo>
+#   cd deploy/AWS/data-layer
+#   cp .env.example .env   # then edit DATA_LAYER_HOST — see below
+#   docker compose up -d
+#
+# ── Cross-EC2 networking ──────────────────────────────────────────────────
+# Docker bridge networks don't span hosts, so the other two EC2 instances
+# (flink-job, jenkins) reach these services over real TCP using THIS
+# instance's IP + published ports — not container DNS names.
+#
+# DATA_LAYER_HOST (set in .env) is the address Kafka hands back to remote
+# clients in its broker metadata (advertised.listeners). Get this wrong and
+# Flink/Jenkins will connect fine for the initial bootstrap request but then
+# fail on every subsequent request, because Kafka tells them to reconnect to
+# whatever DATA_LAYER_HOST says. Use:
+#   - This EC2's PRIVATE IP if all 3 instances are in the same VPC (recommended:
+#     no data-transfer cost, no need to open the broker to the public internet).
+#   - This EC2's PUBLIC/Elastic IP only if the other instances are outside the VPC.
+#
+# Security group on this instance must allow inbound, from the flink-job and
+# jenkins instances' security groups (not 0.0.0.0/0):
+#   9092 (Kafka)      — flink-job, jenkins
+#   5432 (Postgres)   — flink-job
+#   3000 (Grafana)    — flink-job (annotations API), plus your IP for the UI
+#   8081 (Kafka UI)   — your IP only (browser access)
+#
+# ── SECURITY NOTE ──────────────────────────────────────────────────────────
+# Grafana below runs with GF_AUTH_ANONYMOUS_ENABLED + Editor role, and
+# Postgres accepts password auth from ANY host that can reach port 5432
+# (the official image's default pg_hba.conf, not restricted to this VPC).
+# That matches the original local-dev docker-compose.yml and is what lets
+# GrafanaSink's placeholder bearer token work out of the box, but it means
+# your AWS security groups are the ONLY thing standing between this data
+# layer and the internet. Keep them locked down to the other two
+# instances' security groups + your own IP, never 0.0.0.0/0.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Kafka (KRaft mode) ─────────────────────────────────────────────────────
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"    # remote access — Flink (flink-job EC2) and Jenkins/kcat (jenkins EC2)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      # PLAINTEXT is what remote EC2s use (advertised as this host's real
+      # address); INTERNAL stays docker-network-only for kafka-ui, which is
+      # co-located with the broker on this same instance.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://${DATA_LAYER_HOST}:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - cicd-net
+
+  # ── Kafka UI ───────────────────────────────────────────────────────────────
+  # Human-only access — no other EC2 talks to this. Browse via
+  # http://<DATA_LAYER_HOST>:8081.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local-kraft
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      AUTH_TYPE: "DISABLED"
+      JAVA_OPTS: "-Xmx256m"
+    networks:
+      - cicd-net
+
+  # ── PostgreSQL — metric storage ────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"    # remote access — Flink (flink-job EC2) writes metrics here
+    environment:
+      POSTGRES_DB:       cicd_metrics
+      POSTGRES_USER:     flink
+      POSTGRES_PASSWORD: admin
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Run init.sql automatically on first start
+      - ../../../src/main/resources/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flink -d cicd_metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cicd-net
+
+  # ── Grafana — dashboards ───────────────────────────────────────────────────
+  # Reads from Postgres over the LOCAL docker network (co-located on this
+  # instance), but also receives annotation POSTs from Flink on the
+  # flink-job EC2 — see the GrafanaSink note in the security block above.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"    # http://<DATA_LAYER_HOST>:3000  (admin / admin)
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED:  "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../../docker/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/postgres.yaml:ro
+      - ../../docker/grafana-dashboards-provider.yaml:/etc/grafana/provisioning/dashboards/provider.yaml:ro
+      - ../../docker/dashboards:/etc/grafana/provisioning/dashboards/json:ro
+    networks:
+      - cicd-net
+
+networks:
+  cicd-net:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  postgres-data:
+  grafana-data:

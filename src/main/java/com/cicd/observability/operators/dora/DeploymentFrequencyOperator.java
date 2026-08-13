@@ -3,6 +3,7 @@ package com.cicd.observability.operators.dora;
 import com.cicd.observability.config.FlinkConfig;
 import com.cicd.observability.model.CicdEvent;
 import com.cicd.observability.model.MetricResult;
+import com.cicd.observability.operators.SourceTiming;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
@@ -71,6 +72,9 @@ public class DeploymentFrequencyOperator {
     public static class DeployCount {
         long count = 0;
         String serviceName = "";
+        // Earliest Flink-received time among this window's events — see
+        // SourceTiming and MetricResult.flinkReceivedAtMs.
+        long minFlinkReceivedAtMs = 0;
     }
 
     // ── AggregateFunction ──────────────────────────────────────────────
@@ -84,6 +88,7 @@ public class DeploymentFrequencyOperator {
         public DeployCount add(CicdEvent e, DeployCount acc) {
             acc.count++;
             acc.serviceName = e.getServiceName();
+            acc.minFlinkReceivedAtMs = SourceTiming.earliest(acc.minFlinkReceivedAtMs, e.getFlinkReceivedAtMs());
             return acc;
         }
 
@@ -92,6 +97,7 @@ public class DeploymentFrequencyOperator {
         @Override
         public DeployCount merge(DeployCount a, DeployCount b) {
             a.count += b.count;
+            a.minFlinkReceivedAtMs = SourceTiming.earliest(a.minFlinkReceivedAtMs, b.minFlinkReceivedAtMs);
             return a;
         }
     }
@@ -116,6 +122,7 @@ public class DeploymentFrequencyOperator {
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getStart()), ZoneOffset.UTC).toString(),
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(ctx.window().getEnd()), ZoneOffset.UTC).toString(),
                     acc.count, acc.count);
+            r.setFlinkReceivedAtMs(acc.minFlinkReceivedAtMs);
             out.collect(r);
         }
     }
@@ -156,6 +163,7 @@ public class DeploymentFrequencyOperator {
         private transient ValueState<Long> counter;
         private transient ValueState<Long> windowEnd;
         private transient ValueState<String> serviceName;
+        private transient ValueState<Long> lastFlinkReceivedAtMs;
 
         LiveDeployCounter(long windowMs) { this.windowMs = windowMs; }
 
@@ -167,6 +175,8 @@ public class DeploymentFrequencyOperator {
                     new ValueStateDescriptor<>("live-deploy-window-end", Long.class));
             serviceName = getRuntimeContext().getState(
                     new ValueStateDescriptor<>("live-deploy-service-name", String.class));
+            lastFlinkReceivedAtMs = getRuntimeContext().getState(
+                    new ValueStateDescriptor<>("live-deploy-flink-received-at", Long.class));
         }
 
         @Override
@@ -214,12 +224,15 @@ public class DeploymentFrequencyOperator {
             long count = (counter.value() == null ? 0L : counter.value()) + 1;
             counter.update(count);
             serviceName.update(event.getServiceName());
+            lastFlinkReceivedAtMs.update(event.getFlinkReceivedAtMs());
 
-            out.collect(new MetricResult(
+            MetricResult r = new MetricResult(
                     MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE,
                     event.getPipelineId(), event.getServiceName(),
                     LIVE_WINDOW_MARKER, LIVE_WINDOW_MARKER,
-                    count, count));
+                    count, count);
+            r.setFlinkReceivedAtMs(event.getFlinkReceivedAtMs());
+            out.collect(r);
         }
 
         @Override
