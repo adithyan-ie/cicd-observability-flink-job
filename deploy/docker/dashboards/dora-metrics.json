@@ -251,7 +251,7 @@
     {
       "id": 12,
       "title": "Flink Processing Latency — P95 (ms)",
-      "description": "95th-percentile Flink processing latency (inserted_at - flink_received_at) across all metric types, within the dashboard's selected time range.",
+      "description": "95th-percentile Flink processing latency (inserted_at - flink_received_at), one reading per (metric_type, pipeline_id) taken from its most recently fired window, within the dashboard's selected time range. Scoped to latest-per-pipeline rather than every historical window row, so a pipeline that has been re-corrected multiple times during allowedLateness contributes its current reading once instead of every past firing dragging the percentile upward.",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 48 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -260,7 +260,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS p95_latency_ms FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at)",
+          "rawSql": "WITH latest_per_pipeline AS (SELECT DISTINCT ON (metric_type, pipeline_id) metric_type, pipeline_id, inserted_at, flink_received_at FROM cicd_metrics WHERE flink_received_at IS NOT NULL ORDER BY metric_type, pipeline_id, window_end_ms DESC, inserted_at DESC) SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS p95_latency_ms FROM latest_per_pipeline WHERE $__timeFilter(inserted_at)",
           "rawQuery": true
         }
       ]
