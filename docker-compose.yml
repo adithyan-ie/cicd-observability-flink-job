@@ -218,9 +218,8 @@ services:
   #   - Sole TaskManager for local dev: executes ALL operator tasks
   #     (EventRouter, DORA, PipelineHealth, LateEvent, CEP/FailurePattern)
   #   - Maintains RocksDB state for MapState/ValueState operators
-  flink-tm-1:
+  flink-tm:
     image: cicd-flink-analytics:latest
-    container_name: flink-tm-1
     restart: unless-stopped
     depends_on:
       flink-jm:

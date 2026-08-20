@@ -247,11 +247,14 @@
           "rawQuery": true
         }
       ]
-    },
+    }
+  ],
+  "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",
+  "_disabledPanels": [
     {
       "id": 12,
       "title": "Flink Processing Latency — P95 (ms)",
-      "description": "95th-percentile Flink processing latency (inserted_at - flink_received_at), one reading per (metric_type, pipeline_id) taken from its most recently fired window, within the dashboard's selected time range. Scoped to latest-per-pipeline rather than every historical window row, so a pipeline that has been re-corrected multiple times during allowedLateness contributes its current reading once instead of every past firing dragging the percentile upward.",
+      "_disabledReason": "inserted_at - flink_received_at is gated on the job-global watermark advancing, not just on record consumption speed. With FlinkConfig.IDLE_TIMEOUT = 60s (withIdleness), any Kafka partition that isn't actively receiving test traffic holds back the global min-watermark for up to 60 real seconds before Flink excludes it as idle — so a window's firing (and therefore its Postgres write) can lag its triggering event by up to that long even when Flink processed every record in milliseconds. During manual/partial-pipeline testing this reads as a misleadingly large P95 that has nothing to do with engine throughput. Panel 11 (Flink Processing Latency (ms), the per-minute timeseries) shows the same underlying computation and is unaffected by this disable — re-enable this once test traffic reliably touches every partition, or once the panel is redefined to isolate consumption speed from watermark-gated emission.",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 48 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -264,10 +267,7 @@
           "rawQuery": true
         }
       ]
-    }
-  ],
-  "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",
-  "_disabledPanels": [
+    },
     {
       "id": 8,
       "title": "Deployment Frequency — Truly-Late Events (count per window)",
