@@ -1,0 +1,155 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI/CD Observability — Flink job on Kubernetes (flink-job EC2 replacement)
+#
+# Replaces deploy/AWS/flink-job/docker-compose.yml, talking outbound to the
+# data-layer EC2 the same way (DATA_LAYER_HOST:9092/5432/3000).
+#
+# Build the image locally and load it into containerd (no registry, no pull):
+#   docker build -t cicd-flink-analytics:latest .
+#   docker save cicd-flink-analytics:latest -o /tmp/cicd-flink-analytics.tar
+#   sudo k3s ctr images import /tmp/cicd-flink-analytics.tar
+#   # (plain containerd: sudo ctr -n k8s.io images import /tmp/cicd-flink-analytics.tar)
+#
+# Deploy — DATA_LAYER_HOST must match deploy/AWS/data-layer/.env's value:
+#   export DATA_LAYER_HOST=<data-layer-ec2-ip>
+#   envsubst < deploy/kubernetes/flink-deployment.yaml | kubectl apply -f -
+#
+# Requires the Flink Kubernetes Operator already installed on the cluster
+# (helm install flink-kubernetes-operator ...) with its CRDs.
+# ═══════════════════════════════════════════════════════════════════════════════
+---
+# Native-Kubernetes mode means the JobManager itself creates/deletes
+# TaskManager pods directly via the K8s API as parallelism changes (see
+# spec.serviceAccount below) — the default service account has no such
+# permission on a cluster with RBAC enabled (k3s included), so the
+# JobManager pod needs this identity instead.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink-service-account
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "configmaps", "events", "persistentvolumeclaims"]
+    verbs:     ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs:     ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flink.apache.org"]
+    resources: ["flinkdeployments", "flinksessionjobs"]
+    verbs:     ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind:     Role
+  name:     flink-role
+subjects:
+  - kind: ServiceAccount
+    name: flink-service-account
+
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: cicd-flink-analytics
+spec:
+  # Local image built above and imported straight into containerd — Never
+  # means kubelet never attempts a registry pull.
+  image: cicd-flink-analytics:latest
+  imagePullPolicy: Never
+
+  serviceAccount: flink-service-account
+
+  flinkVersion: v1_18
+
+  flinkConfiguration:
+    # Everything else (checkpoint dir, RocksDB, restart strategy, Java opts)
+    # comes from deploy/docker/flink-conf.yaml baked into the image — these
+    # keys are just what's overlaid on top of it.
+
+    # ── Autoscaler ─────────────────────────────────────────────────────────
+    # Watches per-operator busy/backpressure metrics and rewrites each
+    # vertex's parallelism to hit target.utilization, then creates/deletes
+    # TaskManager pods itself to host that parallelism — that's the
+    # "TaskManager pod scaling" (a plain Kubernetes HPA can't do this: there's
+    # no Deployment/ReplicaSet behind native-mode TaskManager pods for it to
+    # target).
+    job.autoscaler.enabled: "true"
+    job.autoscaler.stabilization.interval: "1m"
+    job.autoscaler.metrics.window: "5m"
+    job.autoscaler.target.utilization: "0.7"
+    job.autoscaler.target.utilization.boundary: "0.2"
+    job.autoscaler.restart.time: "2m"
+    job.autoscaler.catch-up.duration: "5m"
+    pipeline.max-parallelism: "10"
+
+    # Adaptive Scheduler lets the JobManager add/remove TaskManagers and
+    # rescale the running job in place.
+    jobmanager.scheduler: adaptive
+
+    # last-state upgrade mode needs Kubernetes HA metadata even with a
+    # single JobManager replica.
+    high-availability.type: kubernetes
+    high-availability.storageDir: file:///tmp/flink-ha
+    taskmanager.numberOfTaskSlots: "4"
+
+  jobManager:
+    resource:
+      memory: "1024m"
+      cpu: 0.5
+    replicas: 1
+    podTemplate:
+      spec:
+        containers:
+          - name: flink-main-container
+            env: &flink-env
+              - { name: KAFKA_BOOTSTRAP,   value: "${DATA_LAYER_HOST}:9092" }
+              - { name: KAFKA_TOPIC_INPUT, value: "cicd-events" }
+              - { name: PG_URL,            value: "jdbc:postgresql://${DATA_LAYER_HOST}:5432/cicd_metrics" }
+              - { name: PG_USER,           value: "flink" }
+              - { name: PG_PASSWORD,       value: "admin" }
+              - { name: GRAFANA_URL,       value: "http://${DATA_LAYER_HOST}:3000" }
+              - { name: GRAFANA_API_KEY,   value: "changeme" }
+              - { name: FLINK_PARALLELISM, value: "4" }
+            volumeMounts:
+              - name: flink-ha
+                mountPath: /tmp/flink-ha
+        volumes:
+          - name: flink-ha
+            emptyDir: {}
+
+  taskManager:
+    resource:
+      memory: "1280m"
+      cpu: 1.0
+    # Starting point only — once the autoscaler is enabled above, the
+    # operator overwrites this on every rescale.
+    replicas: 1
+    podTemplate:
+      spec:
+        containers:
+          - name: flink-main-container
+            env: *flink-env
+            volumeMounts:
+              - name: rocksdb-state
+                mountPath: /tmp/rocksdb
+        volumes:
+          - name: rocksdb-state
+            emptyDir: {}
+
+  job:
+    jarURI: local:///opt/flink/usrlib/cicd-flink-analytics.jar
+    entryClass: com.cicd.observability.jobs.PipelineObservabilityJob
+    parallelism: 4
+    upgradeMode: last-state
+    state: running
