@@ -209,10 +209,13 @@ services:
   # ── Flink TaskManager ──────────────────────────────────────────────────────
   # Role: "taskmanager"
   #   - Registers with JobManager at flink-jm:6123
-  #   - Provides 4 task slots (numberOfTaskSlots: 4) — enough for parallelism=4
-  #   - Sole TaskManager for local dev: executes ALL operator tasks
-  #     (EventRouter, DORA, PipelineHealth, LateEvent, CEP/FailurePattern)
-  #   - Maintains RocksDB state for MapState/ValueState operators
+  #   - Provides numberOfTaskSlots task slots per replica — scale with
+  #     `docker compose up -d --scale flink-tm=N` to add more slots.
+  #   - No RocksDB volume mount: /tmp/rocksdb is local scratch space inside
+  #     each container (created by the Dockerfile), not shared/persistent —
+  #     a shared volume across scaled replicas causes state-restore failures
+  #     (concurrent RocksDB local-dir access from multiple TM processes).
+  #     Checkpoint data itself is durable via the flink-checkpoints volume.
   flink-tm:
     image: cicd-flink-analytics:latest
     restart: unless-stopped
@@ -228,7 +231,6 @@ services:
         taskmanager.memory.process.size: 1280m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
-      - flink-rocksdb-1:/tmp/rocksdb
     networks:
       - cicd-net
 
@@ -241,4 +243,3 @@ volumes:
   postgres-data:
   grafana-data:
   flink-checkpoints:    # shared between JM and TM for checkpoint access
-  flink-rocksdb-1:      # RocksDB state for the TaskManager
