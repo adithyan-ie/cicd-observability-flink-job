@@ -2,12 +2,7 @@ package com.cicd.observability.config;
 
 import com.cicd.observability.deserializer.CicdEventDeserializer;
 import com.cicd.observability.model.CicdEvent;
-import com.cicd.observability.model.MetricResult;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.serialization.SerializationSchema;
-import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
-import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
@@ -15,9 +10,7 @@ import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.kafka.clients.producer.ProducerRecord;
 
-import javax.annotation.Nullable;
 import java.time.Duration;
 import java.util.Properties;
 
@@ -45,11 +38,6 @@ public class FlinkConfig {
     // ── Kafka ──────────────────────────────────────────────────────────
     public static final String KAFKA_BOOTSTRAP       = env("KAFKA_BOOTSTRAP", "kafka:29092");
     public static final String TOPIC_CICD_EVENTS     = "cicd-events";
-    public static final String TOPIC_METRICS         = "pipeline-metrics";
-    public static final String TOPIC_HEALTH          = "pipeline-health";
-    public static final String TOPIC_FAILURE_ALERTS  = "failure-pattern-alerts";
-    public static final String TOPIC_PATTERN_TIMEOUT = "pattern-timeouts";
-    public static final String TOPIC_LATE_EVENTS     = "late-events";
     public static final String CONSUMER_GROUP        = "flink-cicd-analytics";
 
     // ── Watermark ──────────────────────────────────────────────────────
@@ -183,54 +171,4 @@ public class FlinkConfig {
                 .build();
     }
 
-    // ── Kafka sinks ────────────────────────────────────────────────────
-
-    public static KafkaSink<MetricResult> metricSink(String topic) {
-        return KafkaSink.<MetricResult>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setRecordSerializer(new MetricResultSerializer(topic))
-                .build();
-    }
-
-    public static KafkaSink<String> stringSink(String topic) {
-        return KafkaSink.<String>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setRecordSerializer(
-                        KafkaRecordSerializationSchema.<String>builder()
-                                .setTopic(topic)
-                                .setValueSerializationSchema(
-                                        (SerializationSchema<String>) v ->
-                                                v.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-                                .build())
-                .build();
-    }
-
-    // ── MetricResult serialiser ────────────────────────────────────────
-
-    static class MetricResultSerializer
-            implements KafkaRecordSerializationSchema<MetricResult> {
-
-        private static final long serialVersionUID = 1L;
-        private final String topic;
-        private transient ObjectMapper mapper;
-
-        MetricResultSerializer(String topic) { this.topic = topic; }
-
-        @Override
-        public void open(SerializationSchema.InitializationContext ctx,
-                         KafkaSinkContext sinkCtx) {
-            mapper = new ObjectMapper();
-        }
-
-        @Override
-        @Nullable
-        public ProducerRecord<byte[], byte[]> serialize(
-                MetricResult m, KafkaSinkContext ctx, Long ts) {
-            try {
-                String key = m.getServiceName() + ":" + m.getMetricType();
-                return new ProducerRecord<>(topic, key.getBytes(),
-                        mapper.writeValueAsBytes(m));
-            } catch (Exception e) { return null; }
-        }
-    }
 }

@@ -11,11 +11,6 @@ kafka:
   bootstrap:     kafka:29092
   topics:
     input:     cicd-events
-    metrics:   pipeline-metrics
-    health:    pipeline-health
-    alerts:    failure-pattern-alerts
-    timeouts:  pattern-timeouts
-    late:      late-events
   consumerGroup: flink-cicd-analytics
 
 # ── Flink ──────────────────────────────────────────────────────────────────────

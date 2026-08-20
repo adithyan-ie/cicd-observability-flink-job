@@ -51,11 +51,6 @@ COPY deploy/docker/flink-conf.yaml /opt/flink/conf/flink-conf.yaml
 # Environment variable defaults (overridden in docker-compose / K8s ConfigMap)
 ENV KAFKA_BOOTSTRAP="kafka:29092" \
     KAFKA_TOPIC_INPUT="cicd-events" \
-    KAFKA_TOPIC_METRICS="pipeline-metrics" \
-    KAFKA_TOPIC_HEALTH="pipeline-health" \
-    KAFKA_TOPIC_ALERTS="failure-pattern-alerts" \
-    KAFKA_TOPIC_TIMEOUTS="pattern-timeouts" \
-    KAFKA_TOPIC_LATE="late-events" \
     FLINK_PARALLELISM="2" \
     PG_URL="jdbc:postgresql://postgres:5432/cicd_metrics" \
     PG_USER="flink" \

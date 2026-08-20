@@ -31,11 +31,6 @@ x-flink-env: &flink-env
   # Kafka — data-layer EC2, PLAINTEXT listener (see data-layer/docker-compose.yml)
   KAFKA_BOOTSTRAP:        ${DATA_LAYER_HOST}:9092
   KAFKA_TOPIC_INPUT:      cicd-events
-  KAFKA_TOPIC_METRICS:    pipeline-metrics
-  KAFKA_TOPIC_HEALTH:     pipeline-health
-  KAFKA_TOPIC_ALERTS:     failure-pattern-alerts
-  KAFKA_TOPIC_TIMEOUTS:   pattern-timeouts
-  KAFKA_TOPIC_LATE:       late-events
   # Postgres — data-layer EC2
   PG_URL:      jdbc:postgresql://${DATA_LAYER_HOST}:5432/cicd_metrics
   PG_USER:     flink
