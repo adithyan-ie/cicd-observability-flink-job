@@ -4,7 +4,6 @@
 #
 # Usage:
 #   ./scripts/deploy.sh docker       # Run full stack in Docker
-#   ./scripts/deploy.sh k8s          # Deploy to Kubernetes with Flink Operator
 #   ./scripts/deploy.sh build        # Build Docker image only
 #   ./scripts/deploy.sh test         # Run JUnit tests
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -86,74 +85,6 @@ deploy_docker() {
     echo "  echo '{\"event\":{\"event_id\":\"t1\",\"pipeline_id\":\"bp\",\"service_name\":\"bloodpressure\",\"event_type\":\"BUILD_STARTED\",\"status\":\"SUCCESS\",\"event_timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}' | docker exec -i kcat kcat -P -b kafka:29092 -t cicd-events -k \"bp:BUILD_STARTED\""
 }
 
-# ── Kubernetes deployment ──────────────────────────────────────────────────────
-deploy_k8s() {
-    print_header "Deploying to Kubernetes with Flink Operator"
-
-    # Pre-checks
-    kubectl cluster-info > /dev/null 2>&1 || print_err "kubectl not connected to a cluster"
-
-    # 1. Install Flink Kubernetes Operator (idempotent)
-    print_step "Installing Flink Kubernetes Operator..."
-    if ! helm list -n flink-operator 2>/dev/null | grep -q flink-kubernetes-operator; then
-        helm repo add flink-operator-repo \
-            https://downloads.apache.org/flink/flink-kubernetes-operator-1.8.0/ 2>/dev/null || true
-        helm repo update
-        helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
-            --namespace flink-operator \
-            --create-namespace \
-            --wait
-        print_ok "Flink Kubernetes Operator installed"
-    else
-        print_ok "Flink Kubernetes Operator already installed"
-    fi
-
-    # 2. Build + push image
-    print_step "Building and pushing image..."
-    [[ -z "${REGISTRY}" ]] && print_err "Set REGISTRY env var, e.g.: export REGISTRY=docker.io/youruser"
-    IMAGE_TAG="${IMAGE_TAG:-1.0.0}"
-    build_image
-
-    # Update image reference in FlinkDeployment
-    sed -i "s|your-registry/cicd-flink-analytics:1.0.0|${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|g" \
-        kubernetes/operator/flink-deployment.yaml
-
-    # 3. Apply manifests
-    print_step "Applying namespace, RBAC, secrets..."
-    kubectl apply -f kubernetes/base/00-namespace-configmap.yaml
-    kubectl apply -f kubernetes/operator/rbac.yaml
-
-    print_step "Provisioning Grafana datasource + dashboard ConfigMaps..."
-    kubectl create configmap grafana-datasource-config -n cicd-observability \
-        --from-file=postgres.yaml=docker/grafana-datasource.yaml \
-        --dry-run=client -o yaml | kubectl apply -f -
-    kubectl create configmap grafana-dashboards-provider-config -n cicd-observability \
-        --from-file=provider.yaml=docker/grafana-dashboards-provider.yaml \
-        --dry-run=client -o yaml | kubectl apply -f -
-    kubectl create configmap grafana-dashboards-config -n cicd-observability \
-        --from-file=dora-metrics.json=docker/dashboards/dora-metrics.json \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    kubectl apply -f kubernetes/base/postgres-grafana.yaml
-
-    print_step "Applying FlinkDeployment CRD..."
-    kubectl apply -f kubernetes/operator/flink-deployment.yaml
-
-    # 4. Wait for Flink job to start
-    print_step "Waiting for FlinkDeployment to be ready..."
-    kubectl wait --for=condition=Ready \
-        flinkdeployment/cicd-flink-analytics \
-        -n cicd-observability \
-        --timeout=300s && print_ok "FlinkDeployment is Ready" \
-        || echo "  ⚠️  Timeout — check: kubectl describe flinkdeployment/cicd-flink-analytics -n cicd-observability"
-
-    print_header "Kubernetes deployment complete!"
-    echo "  Check pods:    kubectl get pods -n cicd-observability"
-    echo "  Flink UI:      kubectl port-forward svc/cicd-flink-analytics-rest 8081:8081 -n cicd-observability"
-    echo "  Grafana:       http://<node-ip>:30300"
-    echo "  Flink logs:    kubectl logs -l component=jobmanager -n cicd-observability -f"
-}
-
 # ── Tests ──────────────────────────────────────────────────────────────────────
 run_tests() {
     print_header "Running JUnit tests"
@@ -164,19 +95,17 @@ run_tests() {
 # ── Main ───────────────────────────────────────────────────────────────────────
 case "${1:-help}" in
     docker) deploy_docker ;;
-    k8s)    deploy_k8s    ;;
     build)  build_image   ;;
     test)   run_tests     ;;
     *)
-        echo "Usage: $0 {docker|k8s|build|test}"
+        echo "Usage: $0 {docker|build|test}"
         echo
         echo "  docker  Build image and deploy full stack via docker compose"
-        echo "  k8s     Build, push, and deploy to Kubernetes with Flink Operator"
         echo "  build   Build Docker image only (optionally push if REGISTRY is set)"
         echo "  test    Run JUnit tests"
         echo
         echo "Environment variables:"
         echo "  REGISTRY   Docker registry prefix, e.g. docker.io/youruser"
-        echo "  IMAGE_TAG  Image tag (default: latest for docker, 1.0.0 for k8s)"
+        echo "  IMAGE_TAG  Image tag (default: latest)"
         ;;
 esac

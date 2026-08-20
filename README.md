@@ -58,31 +58,8 @@ cicd-observability-flink/
     ├── docker/
     │   ├── flink-conf.yaml                  ← Flink config baked into image
     │   └── grafana-datasource.yaml          ← Grafana auto-provisioning
-    ├── scripts/
-    │   └── deploy.sh                        ← One-command deploy for Docker or K8s
-    ├── kubernetes/
-    │   ├── base/                            ← Raw K8s manifests (Kustomize base)
-    │   │   ├── 00-namespace-configmap.yaml
-    │   │   ├── 01-jobmanager.yaml
-    │   │   ├── 02-taskmanager.yaml
-    │   │   ├── postgres-grafana.yaml
-    │   │   └── kustomization.yaml
-    │   ├── operator/                        ← Flink Kubernetes Operator CRD
-    │   │   ├── flink-deployment.yaml        ← FlinkDeployment CRD (recommended)
-    │   │   └── rbac.yaml
-    │   └── overlays/
-    │       ├── dev/kustomization.yaml        ← Dev overrides (1 TM, local image)
-    │       └── prod/kustomization.yaml       ← Prod overrides (3 TMs, registry image)
-    └── helm/
-        └── cicd-flink/                      ← Helm chart (alternative to Kustomize)
-            ├── Chart.yaml
-            ├── values.yaml
-            └── templates/
-                ├── _helpers.tpl
-                ├── configmap.yaml
-                ├── jobmanager.yaml
-                ├── taskmanager.yaml
-                └── rbac.yaml
+    └── scripts/
+        └── deploy.sh                        ← One-command deploy for Docker
 ```
 
 ---
@@ -143,44 +120,6 @@ docker exec kcat kcat -C -b kafka:29092 -t failure-pattern-alerts -e
 
 ---
 
-### Deploy to Kubernetes (Flink Operator — recommended)
-
-```bash
-# 1. Set your registry
-export REGISTRY=docker.io/youruser
-export IMAGE_TAG=1.0.0
-
-# 2. One command installs operator + deploys everything
-./deploy/scripts/deploy.sh k8s
-
-# 3. Monitor
-kubectl get pods -n cicd-observability -w
-kubectl get flinkdeployment -n cicd-observability
-
-# 4. Access Flink Web UI
-kubectl port-forward svc/cicd-flink-analytics-rest 8081:8081 -n cicd-observability
-open http://localhost:8081
-```
-
-### Deploy to Kubernetes (raw manifests with Kustomize)
-
-```bash
-# Dev
-kubectl apply -k deploy/kubernetes/overlays/dev
-
-# Production
-kubectl apply -k deploy/kubernetes/overlays/prod
-
-# Or with Helm
-helm install cicd-flink deploy/helm/cicd-flink \
-  --namespace cicd-observability \
-  --create-namespace \
-  --set image.tag=1.0.0 \
-  --set kafka.bootstrap=kafka:29092
-```
-
----
-
 ## Build and test
 
 ```bash
@@ -199,12 +138,6 @@ docker build -t cicd-flink-analytics:1.0.0 .
 ## PostgreSQL schema
 
 Schema is auto-applied on first start via `init.sql` mounted as Docker init script.
-For Kubernetes, apply manually:
-
-```bash
-kubectl exec -it deploy/postgres -n cicd-observability -- \
-  psql -U flink -d cicd_metrics -f /init.sql
-```
 
 Key tables:
 
@@ -251,7 +184,7 @@ ORDER BY inserted_at;
 ## How the single image runs both JobManager and TaskManager
 
 ```
-docker-compose.yml / Kubernetes manifest
+docker-compose.yml
 │
 ├── flink-jm:  command: ["standalone-job", "--job-classname", "...PipelineObservabilityJob"]
 │               → Loads JAR from /opt/flink/usrlib/

@@ -35,7 +35,7 @@ import java.util.Map;
  *   - Dashboards (via Postgres data source): all MetricResult values over time
  *
  * Note: For production, Grafana dashboards should be provisioned via
- *   grafana/dashboards/*.json in your Helm chart and read from Postgres.
+ *   grafana/dashboards/*.json and read from Postgres.
  *   This sink handles real-time annotations only.
  */
 public class GrafanaSink extends RichSinkFunction<MetricResult> {
