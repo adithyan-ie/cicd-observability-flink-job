@@ -85,10 +85,18 @@ spec:
     # no Deployment/ReplicaSet behind native-mode TaskManager pods for it to
     # target).
     job.autoscaler.enabled: "true"
-    job.autoscaler.stabilization.interval: "1m"
-    job.autoscaler.metrics.window: "5m"
-    job.autoscaler.target.utilization: "0.7"
-    job.autoscaler.target.utilization.boundary: "0.2"
+    # TEMPORARY — tightened for fast observation of live rescale behavior
+    # (see the P=4->5->8->10 pod/cost discussion). metrics.window/
+    # stabilization.interval trade noise-smoothing for faster reaction;
+    # widen these back (e.g. 5m/1m) once done observing, or a brief real
+    # load spike could trigger a rescale off too little data.
+    job.autoscaler.stabilization.interval: "30s"
+    job.autoscaler.metrics.window: "1m"
+    # Scale-up triggers above (target + boundary) = 0.6 (60% busy).
+    # Scale-down triggers below (target - boundary) = 0.4 (40% busy).
+    # Between 0.4 and 0.6, no rescale — the dead zone that stops it thrashing.
+    job.autoscaler.target.utilization: "0.5"
+    job.autoscaler.target.utilization.boundary: "0.1"
     job.autoscaler.restart.time: "2m"
     job.autoscaler.catch-up.duration: "5m"
     pipeline.max-parallelism: "10"
@@ -102,6 +110,7 @@ spec:
     high-availability.type: kubernetes
     high-availability.storageDir: file:///tmp/flink-ha
     taskmanager.numberOfTaskSlots: "4"
+    kubernetes.cluster-id: cicd-flink-analytics
 
   jobManager:
     resource:

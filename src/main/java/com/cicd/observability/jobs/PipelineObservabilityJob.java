@@ -59,9 +59,10 @@ public class PipelineObservabilityJob {
         DataStream<CicdEvent> healthStream = routedStream.getSideOutput(EventRouter.HEALTH_TAG);
         DataStream<CicdEvent> cepStream    = routedStream.getSideOutput(EventRouter.CEP_TAG);
 
-        // Job-global event-time watermark — feeds the "Current Watermark"
-        // stat panel, so it's directly readable when constructing a
-        // deliberately-late test event.
+        // Job-global event-time watermark (feeds the "Current Watermark"
+        // stat panel) + first-event-of-this-run marker (feeds Panel 12's
+        // end-to-end latency reference point) — see WatermarkReporterOperator's
+        // javadoc for why both ride the same single-instance stream.
         DataStream<MetricResult> watermarkReport = WatermarkReporterOperator.report(rawStream);
         sinkMetric(watermarkReport, "watermark");
 

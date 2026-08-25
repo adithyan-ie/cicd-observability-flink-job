@@ -247,14 +247,11 @@
           "rawQuery": true
         }
       ]
-    }
-  ],
-  "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",
-  "_disabledPanels": [
+    },
     {
       "id": 12,
-      "title": "Flink Processing Latency — P95 (ms)",
-      "_disabledReason": "inserted_at - flink_received_at is gated on the job-global watermark advancing, not just on record consumption speed. With FlinkConfig.IDLE_TIMEOUT = 60s (withIdleness), any Kafka partition that isn't actively receiving test traffic holds back the global min-watermark for up to 60 real seconds before Flink excludes it as idle — so a window's firing (and therefore its Postgres write) can lag its triggering event by up to that long even when Flink processed every record in milliseconds. During manual/partial-pipeline testing this reads as a misleadingly large P95 that has nothing to do with engine throughput. Panel 11 (Flink Processing Latency (ms), the per-minute timeseries) shows the same underlying computation and is unaffected by this disable — re-enable this once test traffic reliably touches every partition, or once the panel is redefined to isolate consumption speed from watermark-gated emission.",
+      "title": "Flink End-to-End Latency (ms, live metrics)",
+      "description": "MAX(inserted_at) across DEPLOYMENT_FREQUENCY_LIVE/CHANGE_FAILURE_RATE_LIVE rows in the selected time range, minus flink_received_at of the FIRST_EVENT_RECEIVED GLOBAL row (see FirstEventReporterOperator) — the true first event this job run deserialized, of ANY event type, not just the DEPLOY_SUCCESS/DEPLOY_FAILED events that happen to feed the two live counters. FIRST_EVENT_RECEIVED resets every job restart (fresh deploy or checkpoint recovery alike), so this is always 'first event of the current run -> last live metric written', not a stale value from a prior run. Not a per-row/per-pipeline figure like Panel 11's timeseries — one span across the whole visible window. The last-row side stays restricted to the two per-event live types for the same reason as the rest of this panel's history: windowed metric_types' inserted_at is gated on watermark crossing the window boundary, which measures window-close wait, not engine throughput. PIPELINE_HEALTH_SCORE_LIVE and LEAD_TIME_FOR_CHANGES/MEAN_TIME_TO_RECOVERY stay excluded from the last-row side too — see this panel's earlier revisions for why (band-change-gated cadence, and double-counting events already covered by their own panels, respectively).",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 48 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -263,11 +260,14 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "WITH latest_per_pipeline AS (SELECT DISTINCT ON (metric_type, pipeline_id) metric_type, pipeline_id, inserted_at, flink_received_at FROM cicd_metrics WHERE flink_received_at IS NOT NULL ORDER BY metric_type, pipeline_id, window_end_ms DESC, inserted_at DESC) SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS p95_latency_ms FROM latest_per_pipeline WHERE $__timeFilter(inserted_at)",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (\n  (SELECT MAX(inserted_at) FROM cicd_metrics WHERE metric_type IN ('DEPLOYMENT_FREQUENCY_LIVE', 'CHANGE_FAILURE_RATE_LIVE') AND $__timeFilter(inserted_at))\n  - (SELECT flink_received_at FROM cicd_metrics WHERE metric_type = 'FIRST_EVENT_RECEIVED' AND pipeline_id = 'GLOBAL')\n)) * 1000 AS e2e_latency_ms",
           "rawQuery": true
         }
       ]
-    },
+    }
+  ],
+  "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",
+  "_disabledPanels": [
     {
       "id": 8,
       "title": "Deployment Frequency — Truly-Late Events (count per window)",

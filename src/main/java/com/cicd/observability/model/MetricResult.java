@@ -33,7 +33,11 @@ public class MetricResult implements Serializable {
         PATTERN_TIMEOUT,
         // Job-global event-time watermark, reported periodically for
         // dashboard/testing visibility — see WatermarkReporterOperator.
-        WATERMARK
+        WATERMARK,
+        // flink_received_at of the first event deserialized in the current
+        // run (resets on every job restart, not just once ever) — see
+        // FirstEventReporterOperator.
+        FIRST_EVENT_RECEIVED
     }
 
     private MetricType metricType;
