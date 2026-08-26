@@ -250,17 +250,17 @@
     },
     {
       "id": 12,
-      "title": "Flink End-to-End Latency (ms, live metrics)",
-      "description": "MAX(inserted_at) across DEPLOYMENT_FREQUENCY_LIVE/CHANGE_FAILURE_RATE_LIVE rows in the selected time range, minus flink_received_at of the FIRST_EVENT_RECEIVED GLOBAL row (see FirstEventReporterOperator) — the true first event this job run deserialized, of ANY event type, not just the DEPLOY_SUCCESS/DEPLOY_FAILED events that happen to feed the two live counters. FIRST_EVENT_RECEIVED resets every job restart (fresh deploy or checkpoint recovery alike), so this is always 'first event of the current run -> last live metric written', not a stale value from a prior run. Not a per-row/per-pipeline figure like Panel 11's timeseries — one span across the whole visible window. The last-row side stays restricted to the two per-event live types for the same reason as the rest of this panel's history: windowed metric_types' inserted_at is gated on watermark crossing the window boundary, which measures window-close wait, not engine throughput. PIPELINE_HEALTH_SCORE_LIVE and LEAD_TIME_FOR_CHANGES/MEAN_TIME_TO_RECOVERY stay excluded from the last-row side too — see this panel's earlier revisions for why (band-change-gated cadence, and double-counting events already covered by their own panels, respectively).",
-      "type": "stat",
+      "title": "Job Completed At (per metric type)",
+      "description": "MAX(inserted_at) per metric_type in the selected time range, excluding PIPELINE_HEALTH_SCORE/_LIVE/_LATE_EVENTS — the most recent moment Flink wrote a result of each type. No single automatic e2e-latency figure here: pairing this against a 'first event pushed' reference reliably requires the producer to mark push boundaries itself (timing-gap heuristics on the Flink side can't tell a real pause between two pushes apart from a same-push stall caused by consumer lag/backpressure). generate_load_test_events.py now prints the wall-clock time it starts pushing a batch — compare that manually against this table for e2e latency.",
+      "type": "table",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 48 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
-      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT EXTRACT(EPOCH FROM (\n  (SELECT MAX(inserted_at) FROM cicd_metrics WHERE metric_type IN ('DEPLOYMENT_FREQUENCY_LIVE', 'CHANGE_FAILURE_RATE_LIVE') AND $__timeFilter(inserted_at))\n  - (SELECT flink_received_at FROM cicd_metrics WHERE metric_type = 'FIRST_EVENT_RECEIVED' AND pipeline_id = 'GLOBAL')\n)) * 1000 AS e2e_latency_ms",
+          "rawSql": "SELECT metric_type, to_char(MAX(inserted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS max_inserted_at FROM cicd_metrics WHERE metric_type NOT IN ('PIPELINE_HEALTH_SCORE', 'PIPELINE_HEALTH_SCORE_LIVE', 'PIPELINE_HEALTH_SCORE_LATE_EVENTS') AND $__timeFilter(inserted_at) GROUP BY metric_type ORDER BY MAX(inserted_at) DESC",
           "rawQuery": true
         }
       ]

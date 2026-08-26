@@ -377,6 +377,15 @@ def produce_to_kafka(start_ts, total_events, gap_seconds):
             value    = _kafka_dumps(event),   # orjson if available, else json
             callback = delivery_report,
         )
+        if i == 1:
+            # Captured immediately after the first producer.produce() call
+            # returns, not before the loop starts — avoids counting
+            # event_generator()'s per-event setup (random.choice,
+            # generate_lifecycle, timestamp math) against e2e latency.
+            first_event_pushed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            print(f"  First event pushed to Kafka at (wall-clock UTC): {first_event_pushed_at}")
+            print(f"  First event id: {event['event']['event_id']}")
+            print(f"  Compare against the 'Job Completed At' dashboard panel for e2e latency.")
         if i % KAFKA_BATCH_SIZE == 0:
             producer.poll(0)
             elapsed = time.perf_counter() - t0
