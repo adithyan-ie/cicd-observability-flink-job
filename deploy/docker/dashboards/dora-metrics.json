@@ -233,17 +233,17 @@
     },
     {
       "id": 11,
-      "title": "Flink Processing Latency (ms, latest row per metric type)",
-      "description": "For each metric_type, its most-recently-inserted row's own (inserted_at - flink_received_at) — not an average across a bucket. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()); for paired/windowed metric types it's the EARLIEST contributing event's receive time (see SourceTiming.earliest()), so this is pure engine+write latency for *_LIVE/WATERMARK, but includes real business-process/window-close wait for LEAD_TIME_FOR_CHANGES/CHANGE_FAILURE_RATE/MEAN_TIME_TO_RECOVERY/DEPLOYMENT_FREQUENCY/PIPELINE_HEALTH_SCORE — don't compare those two groups directly. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than shown as a bogus multi-decade latency.",
-      "type": "table",
+      "title": "Flink Processing Latency Trend Analysis (ms, avg per minute)",
+      "description": "Flink's own processing latency: inserted_at - flink_received_at, per metric_type, bucketed by minute. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()) — see SourceTiming.earliest() for how it's chosen when a metric result folds multiple events. Unlike a Kafka-CreateTime-based measure, this excludes consumer lag/backlog catch-up time, isolating deserialize -> window/compute -> sink latency. Plotted by inserted_at (real wall-clock arrival time, not event time) since this measures pipeline throughput/lag, not a business metric — unlike the DORA panels above, a real-time X-axis is correct here. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than shown as a bogus multi-decade latency.",
+      "type": "timeseries",
       "gridPos": { "h": 8, "w": 18, "x": 0, "y": 48 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
       "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT metric_type, EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000 AS latency_ms FROM (SELECT DISTINCT ON (metric_type) metric_type, inserted_at, flink_received_at FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at) ORDER BY metric_type, inserted_at DESC) latest ORDER BY latency_ms DESC",
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('minute', inserted_at) AS \"time\", AVG(EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000) AS value, metric_type AS metric FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at) GROUP BY 1, metric_type ORDER BY 1",
           "rawQuery": true
         }
       ]
@@ -261,6 +261,23 @@
           "refId": "A",
           "format": "table",
           "rawSql": "SELECT metric_type, to_char(MAX(inserted_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS max_inserted_at FROM cicd_metrics WHERE metric_type NOT IN ('PIPELINE_HEALTH_SCORE', 'PIPELINE_HEALTH_SCORE_LIVE', 'PIPELINE_HEALTH_SCORE_LATE_EVENTS') AND $__timeFilter(inserted_at) GROUP BY metric_type ORDER BY MAX(inserted_at) DESC",
+          "rawQuery": true
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Flink Processing Latency (ms, latest row per metric type)",
+      "description": "For each metric_type, its most-recently-inserted row's own (inserted_at - flink_received_at) — not an average across a bucket like Panel 11. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()); for paired/windowed metric types it's the EARLIEST contributing event's receive time (see SourceTiming.earliest()), so this is pure engine+write latency for *_LIVE/WATERMARK, but includes real business-process/window-close wait for LEAD_TIME_FOR_CHANGES/CHANGE_FAILURE_RATE/MEAN_TIME_TO_RECOVERY/DEPLOYMENT_FREQUENCY/PIPELINE_HEALTH_SCORE — don't compare those two groups directly. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than shown as a bogus multi-decade latency.",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 56 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT metric_type, EXTRACT(EPOCH FROM (inserted_at - flink_received_at)) * 1000 AS latency_ms FROM (SELECT DISTINCT ON (metric_type) metric_type, inserted_at, flink_received_at FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at) ORDER BY metric_type, inserted_at DESC) latest ORDER BY latency_ms DESC",
           "rawQuery": true
         }
       ]
