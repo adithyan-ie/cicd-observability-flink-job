@@ -42,7 +42,14 @@ public class FlinkConfig {
 
     // ── Watermark ──────────────────────────────────────────────────────
     public static final Duration MAX_OUT_OF_ORDERNESS = Duration.ofSeconds(30);
-    public static final Duration IDLE_TIMEOUT         = Duration.ofSeconds(60);
+    // How long a source partition/subtask with no traffic waits before being
+    // excluded from the min-across-channels watermark computation. Lower
+    // means the job-global watermark (WatermarkReporterOperator, Panel 10)
+    // becomes available sooner after startup when some partitions haven't
+    // received their first event yet — traded against a genuinely-slow
+    // (not idle) partition having less grace before being marked idle,
+    // which is harmless here (self-corrects once it produces data).
+    public static final Duration IDLE_TIMEOUT         = Duration.ofSeconds(30);
 
     // ── Live-metric late gate ─────────────────────────────────────────
     //

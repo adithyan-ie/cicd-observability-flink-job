@@ -49,7 +49,7 @@
       "type": "stat",
       "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
-      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso", "noValue": "Waiting for first watermark…" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
