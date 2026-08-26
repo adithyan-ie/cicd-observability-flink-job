@@ -40,9 +40,10 @@ import java.util.Set;
  *                   pre-screen here to avoid sending fast/on-time events
  *                   through the late-event operator chain unnecessarily.
  *
- *   CEP_TAG       → DEPENDENCY_UPDATED, UNIT_TEST_FAILED, RETRY_TRIGGERED,
- *                   INTEGRATION_TEST_FAILED, ROLLBACK_TRIGGERED
- *                   (exactly the event types that participate in the pattern)
+ *   CEP_TAG       → BUILD_SUCCESS, DEPLOY_STARTED, DEPLOY_FAILED, ROLLBACK_STARTED
+ *                   (the event types that participate in FailurePatternOperator's
+ *                   three deployment-failure patterns — rollback cascade,
+ *                   deployment instability, and build-ok-deploy-broken)
  */
 public class EventRouter extends ProcessFunction<CicdEvent, CicdEvent> {
 
@@ -91,13 +92,12 @@ public class EventRouter extends ProcessFunction<CicdEvent, CicdEvent> {
             "DEPLOY_STARTED", "DEPLOY_SUCCESS", "DEPLOY_FAILED"
     );
 
-    /** Exactly the event types that participate in the CEP cascade pattern */
+    /** Event types that participate in any of the three CEP deployment-failure patterns */
     private static final Set<String> CEP_EVENT_TYPES = Set.of(
-            "DEPENDENCY_UPDATED",
-            "UNIT_TEST_FAILED",
-            "RETRY_TRIGGERED",
-            "INTEGRATION_TEST_FAILED",
-            "ROLLBACK_TRIGGERED"
+            "BUILD_SUCCESS",
+            "DEPLOY_STARTED",
+            "DEPLOY_FAILED",
+            "ROLLBACK_STARTED"
     );
 
     // ── Routing logic ──────────────────────────────────────────────────

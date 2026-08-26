@@ -20,18 +20,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Failure Pattern Discovery using Flink CEP (Complex Event Processing).
+ * Deployment Failure Pattern Discovery using Flink CEP (Complex Event Processing).
  *
- * Flink CEP replaces the Python hand-rolled FSM with a proper NFA
- * (Non-deterministic Finite Automaton) that runs distributed across
- * Flink task managers with managed state and fault tolerance.
+ * Three independent NFAs run over the same pipeline_id-keyed stream. Each
+ * models a realistic CI/CD failure narrative — the individual events
+ * (a single DEPLOY_FAILED) are not exceptional on their own, but the
+ * *sequence* is:
  *
- * The pattern detected:
- *   DEPENDENCY_UPDATED → UNIT_TEST_FAILED → RETRY_TRIGGERED
- *       → INTEGRATION_TEST_FAILED → ROLLBACK_TRIGGERED
- *   All within 10 minutes for the same pipeline.
+ *  1. Rollback cascade      — DEPLOY_FAILED, DEPLOY_FAILED, ROLLBACK_STARTED
+ *                              within 10 min. Two failures that end in an
+ *                              automatic rollback.
+ *  2. Deployment instability — DEPLOY_FAILED, DEPLOY_STARTED, DEPLOY_FAILED
+ *                              within 10 min. A retry that fails again,
+ *                              with no rollback (yet).
+ *  3. Build OK, deploy broken — BUILD_SUCCESS, DEPLOY_FAILED, DEPLOY_FAILED
+ *                              within 15 min. The app compiles fine but
+ *                              deployment keeps failing — points at
+ *                              infrastructure/config rather than code.
  *
- * Flink CEP features used:
+ * Flink CEP features used (per pattern):
  *   Pattern.begin()         → anchor the first event
  *   .followedBy()           → relaxed contiguity (other events can appear between)
  *   .where(SimpleCondition) → filter condition on each pattern step
@@ -39,210 +46,322 @@ import java.util.Map;
  *   CEP.pattern()           → wraps KeyedStream with Flink's NFA engine
  *   PatternStream.select()  → fires when complete match found
  *   PatternTimeoutFunction  → fires when pattern times out (incomplete match)
- *   OutputTag               → routes timeout alerts to a separate stream
+ *   OutputTag               → routes each pattern's timeout alerts to its own side output
  */
 public class FailurePatternOperator {
 
     private static final Logger LOG = LoggerFactory.getLogger(FailurePatternOperator.class);
 
-    /** Side output for partial pattern matches that timed out. */
-    public static final OutputTag<String> TIMEOUT_TAG =
-            new OutputTag<String>("pattern-timeout") {};
+    /** Side outputs for partial matches that timed out — one per pattern. */
+    public static final OutputTag<String> ROLLBACK_CASCADE_TIMEOUT_TAG =
+            new OutputTag<String>("rollback-cascade-timeout") {};
+    public static final OutputTag<String> DEPLOY_INSTABILITY_TIMEOUT_TAG =
+            new OutputTag<String>("deploy-instability-timeout") {};
+    public static final OutputTag<String> BUILD_OK_DEPLOY_BROKEN_TIMEOUT_TAG =
+            new OutputTag<String>("build-ok-deploy-broken-timeout") {};
 
-    // ── CEP Pattern definition ─────────────────────────────────────────
+    /** Shared helper — matches events of a single event_type. */
+    private static SimpleCondition<CicdEvent> eventType(String type) {
+        return new SimpleCondition<CicdEvent>() {
+            @Override
+            public boolean filter(CicdEvent e) {
+                return type.equals(e.getEventType());
+            }
+        };
+    }
 
-    /**
-     * Defines the cascading failure sequence using Flink CEP Pattern API.
-     *
-     * .followedBy() uses RELAXED contiguity — other events may appear
-     * between pattern steps.  This is correct for CI/CD because pipelines
-     * emit many intermediate events (logs, metrics, heartbeats) between
-     * the failure events we care about.
-     *
-     * .within() is the critical time constraint.  Without it, a pattern
-     * could span days.  Flink CEP's NFA will fire PatternTimeoutFunction
-     * for any partially-matched pattern that does not complete within this
-     * window, giving early-warning alerts.
-     */
-    public static Pattern<CicdEvent, ?> buildPattern() {
-        return Pattern.<CicdEvent>begin("dependency_update")
-                .where(new SimpleCondition<CicdEvent>() {
-                    @Override
-                    public boolean filter(CicdEvent e) {
-                        return "DEPENDENCY_UPDATED".equals(e.getEventType());
-                    }
-                })
+    // ════════════════════════════════════════════════════════════════════
+    // Pattern 1 — Rollback cascade
+    //   DEPLOY_FAILED -> DEPLOY_FAILED -> ROLLBACK_STARTED, within 10 min
+    // ════════════════════════════════════════════════════════════════════
 
-                .followedBy("unit_test_failure")
-                .where(new SimpleCondition<CicdEvent>() {
-                    @Override
-                    public boolean filter(CicdEvent e) {
-                        return "UNIT_TEST_FAILED".equals(e.getEventType());
-                    }
-                })
+    public static Pattern<CicdEvent, ?> buildRollbackCascadePattern() {
+        return Pattern.<CicdEvent>begin("first_failure")
+                .where(eventType("DEPLOY_FAILED"))
 
-                .followedBy("retry")
-                .where(new SimpleCondition<CicdEvent>() {
-                    @Override
-                    public boolean filter(CicdEvent e) {
-                        return "RETRY_TRIGGERED".equals(e.getEventType());
-                    }
-                })
-
-                .followedBy("integration_test_failure")
-                .where(new SimpleCondition<CicdEvent>() {
-                    @Override
-                    public boolean filter(CicdEvent e) {
-                        return "INTEGRATION_TEST_FAILED".equals(e.getEventType());
-                    }
-                })
+                .followedBy("second_failure")
+                .where(eventType("DEPLOY_FAILED"))
 
                 .followedBy("rollback")
-                .where(new SimpleCondition<CicdEvent>() {
-                    @Override
-                    public boolean filter(CicdEvent e) {
-                        return "ROLLBACK_TRIGGERED".equals(e.getEventType());
-                    }
-                })
+                .where(eventType("ROLLBACK_STARTED"))
 
-                // The entire sequence must complete within 10 minutes.
-                // If not, PatternTimeoutFunction fires for the partial match.
                 .within(Time.minutes(10));
     }
 
-    // ── Apply CEP to KeyedStream ───────────────────────────────────────
-
-    /**
-     * Wraps the keyed event stream with Flink's NFA engine.
-     *
-     * The stream MUST be keyed by pipeline_id before calling this method.
-     * CEP maintains one NFA state machine per key, distributed across
-     * Flink task managers. This is what the Python FSM loop was trying to
-     * do — but without distribution, state management, or fault tolerance.
-     *
-     * @return main stream of complete pattern match alerts (JSON strings)
-     *         Call .getSideOutput(TIMEOUT_TAG) for partial timeout alerts.
-     */
-    public static SingleOutputStreamOperator<String> detect(
+    public static SingleOutputStreamOperator<String> detectRollbackCascade(
             DataStream<CicdEvent> keyedByPipeline) {
-
-        Pattern<CicdEvent, ?> pattern = buildPattern();
-
-        // CEP.pattern() registers the NFA with the Flink runtime.
-        // Each Flink subtask maintains NFA state for the pipelines assigned to it.
         PatternStream<CicdEvent> patternStream =
-                CEP.pattern(keyedByPipeline, pattern);
+                CEP.pattern(keyedByPipeline, buildRollbackCascadePattern());
 
-        // select() fires PatternSelectFunction for complete matches
-        // and PatternTimeoutFunction for timed-out partial matches.
         return patternStream.select(
-                TIMEOUT_TAG,                        // side output for timeouts
-                new FailurePatternTimeoutFn(),       // partial match handler
-                new FailurePatternSelectFn()         // complete match handler
+                ROLLBACK_CASCADE_TIMEOUT_TAG,
+                new RollbackCascadeTimeoutFn(),
+                new RollbackCascadeSelectFn()
         );
     }
 
-    // ── Complete match handler ─────────────────────────────────────────
-
-    static class FailurePatternSelectFn
+    static class RollbackCascadeSelectFn
             implements PatternSelectFunction<CicdEvent, String> {
 
         private transient ObjectMapper mapper;
 
-        /**
-         * Called exactly once per complete pattern match.
-         *
-         * patternMap keys correspond to the step names in buildPattern().
-         * Each value is a List<CicdEvent> (usually one element per step,
-         * unless .oneOrMore() or .times() is used in the pattern).
-         */
         @Override
         public String select(Map<String, List<CicdEvent>> patternMap) throws Exception {
             if (mapper == null) mapper = new ObjectMapper();
 
-            CicdEvent dep  = patternMap.get("dependency_update").get(0);
-            CicdEvent unit = patternMap.get("unit_test_failure").get(0);
-            CicdEvent retry= patternMap.get("retry").get(0);
-            CicdEvent integ= patternMap.get("integration_test_failure").get(0);
-            CicdEvent rb   = patternMap.get("rollback").get(0);
+            CicdEvent first  = patternMap.get("first_failure").get(0);
+            CicdEvent second = patternMap.get("second_failure").get(0);
+            CicdEvent rb     = patternMap.get("rollback").get(0);
 
             Map<String, Object> alert = new HashMap<>();
-            alert.put("alert_type",       "FAILURE_PATTERN_DETECTED");
-            alert.put("pattern_name",     "Dependency Update Failure Cascade");
-            alert.put("pipeline_id",      dep.getPipelineId());
-            alert.put("service_name",     dep.getServiceName());
-            alert.put("branch",           dep.getBranch());
-            alert.put("commit_sha",       dep.getCommitSha());
-            alert.put("pattern_start_ts", dep.getEventTimestamp());
-            alert.put("pattern_end_ts",   rb.getEventTimestamp());
-
-            // Duration of the full cascade
-            long durationMs = rb.getTimestampMs() - dep.getTimestampMs();
-            alert.put("cascade_duration_minutes", durationMs / 60_000.0);
-
-            // Sequence detail
+            alert.put("alert_type",        "DEPLOY_ROLLBACK_CASCADE");
+            alert.put("pattern_name",      "Repeated Deploy Failure -> Rollback");
+            alert.put("pipeline_id",       first.getPipelineId());
+            alert.put("service_name",      first.getServiceName());
+            alert.put("branch",            first.getBranch());
+            alert.put("commit_sha",        first.getCommitSha());
+            alert.put("first_failure_ts",  first.getEventTimestamp());
+            alert.put("second_failure_ts", second.getEventTimestamp());
+            alert.put("rollback_ts",       rb.getEventTimestamp());
+            alert.put("cascade_duration_minutes",
+                    (rb.getTimestampMs() - first.getTimestampMs()) / 60_000.0);
             alert.put("matched_sequence", List.of(
-                    stepDetail("dependency_update",        dep),
-                    stepDetail("unit_test_failure",        unit),
-                    stepDetail("retry",                    retry),
-                    stepDetail("integration_test_failure", integ),
-                    stepDetail("rollback",                 rb)
+                    stepDetail("first_failure",  first),
+                    stepDetail("second_failure", second),
+                    stepDetail("rollback",       rb)
             ));
 
-            alert.put("dora_impact", Map.of(
-                    "change_failure_rate", "INCREASED",
-                    "mttr_clock_started",  rb.getEventTimestamp()
-            ));
-
-            LOG.warn("🔴 FAILURE PATTERN MATCH: pipeline={} service={}",
-                    dep.getPipelineId(), dep.getServiceName());
+            LOG.warn("🔴 DEPLOY ROLLBACK CASCADE: pipeline={} service={}",
+                    first.getPipelineId(), first.getServiceName());
 
             return mapper.writeValueAsString(alert);
         }
-
-        private Map<String, String> stepDetail(String step, CicdEvent e) {
-            Map<String, String> m = new HashMap<>();
-            m.put("step",  step);
-            m.put("event", e.getEventType());
-            m.put("ts",    e.getEventTimestamp().toString());
-            return m;
-        }
     }
 
-    // ── Partial match / timeout handler ───────────────────────────────
-
-    static class FailurePatternTimeoutFn
+    static class RollbackCascadeTimeoutFn
             implements PatternTimeoutFunction<CicdEvent, String> {
 
         private transient ObjectMapper mapper;
 
-        /**
-         * Called when the pattern window (10 min) expires before all steps
-         * are matched.  partialPatternMap contains the steps that DID match.
-         *
-         * This is an early-warning mechanism — the pipeline started the
-         * failure cascade but hasn't completed it yet (or recovered mid-way).
-         */
         @Override
         public String timeout(Map<String, List<CicdEvent>> partialPatternMap,
                               long timeoutTimestamp) throws Exception {
             if (mapper == null) mapper = new ObjectMapper();
 
             CicdEvent first = partialPatternMap.values().iterator().next().get(0);
-            List<String> matched = List.copyOf(partialPatternMap.keySet());
 
             Map<String, Object> timeout = new HashMap<>();
-            timeout.put("alert_type",      "PATTERN_TIMEOUT");
-            timeout.put("description",     "Failure pattern started but did not complete within 10 min window");
-            timeout.put("pipeline_id",     first.getPipelineId());
-            timeout.put("service_name",    first.getServiceName());
-            timeout.put("matched_steps",   matched);
-            timeout.put("expired_at_ms",   timeoutTimestamp);
+            timeout.put("alert_type",    "DEPLOY_ROLLBACK_CASCADE_TIMEOUT");
+            timeout.put("description",   "Repeated deploy failure did not roll back within the 10-minute window");
+            timeout.put("pipeline_id",   first.getPipelineId());
+            timeout.put("service_name",  first.getServiceName());
+            timeout.put("matched_steps", List.copyOf(partialPatternMap.keySet()));
+            timeout.put("expired_at_ms", timeoutTimestamp);
 
-            LOG.info("⚠️ Pattern timeout: pipeline={} matched steps={}",
-                    first.getPipelineId(), matched);
+            LOG.info("⚠️ Rollback cascade timeout: pipeline={} matched steps={}",
+                    first.getPipelineId(), partialPatternMap.keySet());
 
             return mapper.writeValueAsString(timeout);
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Pattern 2 — Deployment instability
+    //   DEPLOY_FAILED -> DEPLOY_STARTED -> DEPLOY_FAILED, within 10 min
+    // ════════════════════════════════════════════════════════════════════
+
+    public static Pattern<CicdEvent, ?> buildDeploymentInstabilityPattern() {
+        return Pattern.<CicdEvent>begin("first_failure")
+                .where(eventType("DEPLOY_FAILED"))
+
+                .followedBy("retry_deploy")
+                .where(eventType("DEPLOY_STARTED"))
+
+                .followedBy("second_failure")
+                .where(eventType("DEPLOY_FAILED"))
+
+                .within(Time.minutes(10));
+    }
+
+    public static SingleOutputStreamOperator<String> detectDeploymentInstability(
+            DataStream<CicdEvent> keyedByPipeline) {
+        PatternStream<CicdEvent> patternStream =
+                CEP.pattern(keyedByPipeline, buildDeploymentInstabilityPattern());
+
+        return patternStream.select(
+                DEPLOY_INSTABILITY_TIMEOUT_TAG,
+                new DeploymentInstabilityTimeoutFn(),
+                new DeploymentInstabilitySelectFn()
+        );
+    }
+
+    static class DeploymentInstabilitySelectFn
+            implements PatternSelectFunction<CicdEvent, String> {
+
+        private transient ObjectMapper mapper;
+
+        @Override
+        public String select(Map<String, List<CicdEvent>> patternMap) throws Exception {
+            if (mapper == null) mapper = new ObjectMapper();
+
+            CicdEvent first  = patternMap.get("first_failure").get(0);
+            CicdEvent retry  = patternMap.get("retry_deploy").get(0);
+            CicdEvent second = patternMap.get("second_failure").get(0);
+
+            Map<String, Object> alert = new HashMap<>();
+            alert.put("alert_type",        "DEPLOY_INSTABILITY");
+            alert.put("pattern_name",      "Deployment Instability (fail -> retry -> fail)");
+            alert.put("pipeline_id",       first.getPipelineId());
+            alert.put("service_name",      first.getServiceName());
+            alert.put("branch",            first.getBranch());
+            alert.put("commit_sha",        first.getCommitSha());
+            alert.put("first_failure_ts",  first.getEventTimestamp());
+            alert.put("retry_deploy_ts",   retry.getEventTimestamp());
+            alert.put("second_failure_ts", second.getEventTimestamp());
+            alert.put("failures", 2);
+            alert.put("matched_sequence", List.of(
+                    stepDetail("first_failure",  first),
+                    stepDetail("retry_deploy",   retry),
+                    stepDetail("second_failure", second)
+            ));
+
+            LOG.warn("🟠 DEPLOYMENT INSTABILITY: pipeline={} service={}",
+                    first.getPipelineId(), first.getServiceName());
+
+            return mapper.writeValueAsString(alert);
+        }
+    }
+
+    static class DeploymentInstabilityTimeoutFn
+            implements PatternTimeoutFunction<CicdEvent, String> {
+
+        private transient ObjectMapper mapper;
+
+        @Override
+        public String timeout(Map<String, List<CicdEvent>> partialPatternMap,
+                              long timeoutTimestamp) throws Exception {
+            if (mapper == null) mapper = new ObjectMapper();
+
+            CicdEvent first = partialPatternMap.values().iterator().next().get(0);
+
+            Map<String, Object> timeout = new HashMap<>();
+            timeout.put("alert_type",    "DEPLOY_INSTABILITY_TIMEOUT");
+            timeout.put("description",   "Deploy failed and retried but the retry's outcome did not arrive within the 10-minute window");
+            timeout.put("pipeline_id",   first.getPipelineId());
+            timeout.put("service_name",  first.getServiceName());
+            timeout.put("matched_steps", List.copyOf(partialPatternMap.keySet()));
+            timeout.put("expired_at_ms", timeoutTimestamp);
+
+            LOG.info("⚠️ Deployment instability timeout: pipeline={} matched steps={}",
+                    first.getPipelineId(), partialPatternMap.keySet());
+
+            return mapper.writeValueAsString(timeout);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Pattern 3 — Build OK, deploy broken
+    //   BUILD_SUCCESS -> DEPLOY_FAILED -> DEPLOY_FAILED, within 15 min
+    // ════════════════════════════════════════════════════════════════════
+
+    public static Pattern<CicdEvent, ?> buildBuildOkDeployBrokenPattern() {
+        return Pattern.<CicdEvent>begin("build_ok")
+                .where(eventType("BUILD_SUCCESS"))
+
+                .followedBy("first_failure")
+                .where(eventType("DEPLOY_FAILED"))
+
+                .followedBy("second_failure")
+                .where(eventType("DEPLOY_FAILED"))
+
+                .within(Time.minutes(15));
+    }
+
+    public static SingleOutputStreamOperator<String> detectBuildOkDeployBroken(
+            DataStream<CicdEvent> keyedByPipeline) {
+        PatternStream<CicdEvent> patternStream =
+                CEP.pattern(keyedByPipeline, buildBuildOkDeployBrokenPattern());
+
+        return patternStream.select(
+                BUILD_OK_DEPLOY_BROKEN_TIMEOUT_TAG,
+                new BuildOkDeployBrokenTimeoutFn(),
+                new BuildOkDeployBrokenSelectFn()
+        );
+    }
+
+    static class BuildOkDeployBrokenSelectFn
+            implements PatternSelectFunction<CicdEvent, String> {
+
+        private transient ObjectMapper mapper;
+
+        @Override
+        public String select(Map<String, List<CicdEvent>> patternMap) throws Exception {
+            if (mapper == null) mapper = new ObjectMapper();
+
+            CicdEvent buildOk = patternMap.get("build_ok").get(0);
+            CicdEvent first   = patternMap.get("first_failure").get(0);
+            CicdEvent second  = patternMap.get("second_failure").get(0);
+
+            Map<String, Object> alert = new HashMap<>();
+            alert.put("alert_type",         "BUILD_OK_DEPLOY_BROKEN");
+            alert.put("pattern_name",       "Build Succeeded but Deploy Repeatedly Failed");
+            alert.put("pipeline_id",        buildOk.getPipelineId());
+            alert.put("service_name",       buildOk.getServiceName());
+            alert.put("branch",             buildOk.getBranch());
+            alert.put("commit_sha",         buildOk.getCommitSha());
+            alert.put("build_success_ts",   buildOk.getEventTimestamp());
+            alert.put("first_failure_ts",   first.getEventTimestamp());
+            alert.put("second_failure_ts",  second.getEventTimestamp());
+            alert.put("likely_cause",
+                    "Application build succeeded — repeated deploy failures point to "
+                  + "infrastructure/configuration issues rather than code");
+            alert.put("matched_sequence", List.of(
+                    stepDetail("build_ok",       buildOk),
+                    stepDetail("first_failure",  first),
+                    stepDetail("second_failure", second)
+            ));
+
+            LOG.warn("🟡 BUILD OK, DEPLOY BROKEN: pipeline={} service={}",
+                    buildOk.getPipelineId(), buildOk.getServiceName());
+
+            return mapper.writeValueAsString(alert);
+        }
+    }
+
+    static class BuildOkDeployBrokenTimeoutFn
+            implements PatternTimeoutFunction<CicdEvent, String> {
+
+        private transient ObjectMapper mapper;
+
+        @Override
+        public String timeout(Map<String, List<CicdEvent>> partialPatternMap,
+                              long timeoutTimestamp) throws Exception {
+            if (mapper == null) mapper = new ObjectMapper();
+
+            CicdEvent first = partialPatternMap.values().iterator().next().get(0);
+
+            Map<String, Object> timeout = new HashMap<>();
+            timeout.put("alert_type",    "BUILD_OK_DEPLOY_BROKEN_TIMEOUT");
+            timeout.put("description",   "Build succeeded but deploy failures did not repeat a second time within the 15-minute window");
+            timeout.put("pipeline_id",   first.getPipelineId());
+            timeout.put("service_name",  first.getServiceName());
+            timeout.put("matched_steps", List.copyOf(partialPatternMap.keySet()));
+            timeout.put("expired_at_ms", timeoutTimestamp);
+
+            LOG.info("⚠️ Build-ok-deploy-broken timeout: pipeline={} matched steps={}",
+                    first.getPipelineId(), partialPatternMap.keySet());
+
+            return mapper.writeValueAsString(timeout);
+        }
+    }
+
+    // ── Shared helper ───────────────────────────────────────────────────
+
+    private static Map<String, String> stepDetail(String step, CicdEvent e) {
+        Map<String, String> m = new HashMap<>();
+        m.put("step",  step);
+        m.put("event", e.getEventType());
+        m.put("ts",    e.getEventTimestamp());
+        return m;
     }
 }

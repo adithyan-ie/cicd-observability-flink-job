@@ -281,6 +281,23 @@
           "rawQuery": true
         }
       ]
+    },
+    {
+      "id": 14,
+      "title": "CEP Deployment Failure Patterns — Matches & Timeouts",
+      "description": "Results of FailurePatternOperator's three independent Flink CEP NFAs, all keyed by pipeline_id: (1) DEPLOY_ROLLBACK_CASCADE — DEPLOY_FAILED -> DEPLOY_FAILED -> ROLLBACK_STARTED within 10 min; (2) DEPLOY_INSTABILITY — DEPLOY_FAILED -> DEPLOY_STARTED -> DEPLOY_FAILED within 10 min, no rollback (yet); (3) BUILD_OK_DEPLOY_BROKEN — BUILD_SUCCESS -> DEPLOY_FAILED -> DEPLOY_FAILED within 15 min, pointing at infra/config rather than code. Each has a '_TIMEOUT' counterpart (e.g. DEPLOY_INSTABILITY_TIMEOUT) for a partial match whose window expired — see PatternTimeoutFunction. alert_type here is the cicd_alerts column PostgresStringSink was constructed with, not the same-named field inside payload (which duplicates a finer-grained value, e.g. FAILURE_PATTERN_DETECTED, and isn't used for filtering). note surfaces whichever of cascade_duration_minutes / likely_cause / failures the matched pattern populated; matched_steps shows the full per-step detail (matched_sequence for complete matches, matched_steps for timeouts — only one is ever populated per row). Use generator/generate_cep_events.py --scenario {rollback-cascade,instability,build-broken} to produce test data; a truncated --count produces a timeout instead of a complete match.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 64 },
+      "datasource": { "type": "postgres", "uid": "postgres_cicd" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT inserted_at AS computed_at, alert_type, payload->>'pipeline_id' AS pipeline_id, payload->>'service_name' AS service_name, COALESCE(payload->>'pattern_name', payload->>'description') AS detail, COALESCE(payload->>'cascade_duration_minutes' || ' min to rollback', payload->>'likely_cause', 'failures=' || (payload->>'failures')) AS note, COALESCE(payload->'matched_sequence', payload->'matched_steps') AS matched_steps FROM cicd_alerts WHERE alert_type IN ('DEPLOY_ROLLBACK_CASCADE', 'DEPLOY_ROLLBACK_CASCADE_TIMEOUT', 'DEPLOY_INSTABILITY', 'DEPLOY_INSTABILITY_TIMEOUT', 'BUILD_OK_DEPLOY_BROKEN', 'BUILD_OK_DEPLOY_BROKEN_TIMEOUT') AND $__timeFilter(inserted_at) ORDER BY inserted_at DESC LIMIT 30",
+          "rawQuery": true
+        }
+      ]
     }
   ],
   "_disabledPanels_readme": "Panels below are not part of the active 'panels' array (Grafana ignores this key) — kept here so they're easy to restore. Move a panel object back into 'panels' to re-enable it.",

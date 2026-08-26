@@ -19,6 +19,7 @@ import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.util.OutputTag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -153,33 +154,29 @@ public class PipelineObservabilityJob {
         // sinkMetricNoKafka(deployLateCounts, "late-event-audit-count");
 
         // ════════════════════════════════════════════════════════════════
-        // [D] CEP Failure Pattern → Postgres + Grafana
+        // [D] CEP Failure Patterns → Postgres + Grafana
+        //
+        // Three independent NFAs over the same pipeline_id-keyed stream —
+        // see FailurePatternOperator's javadoc for what each detects.
         // ════════════════════════════════════════════════════════════════
 
         DataStream<CicdEvent> keyedForCep =
                 cepStream.keyBy(CicdEvent::getPipelineId);
 
-        SingleOutputStreamOperator<String> cepAlerts =
-                FailurePatternOperator.detect(keyedForCep);
+        sinkCepPattern(
+                FailurePatternOperator.detectRollbackCascade(keyedForCep),
+                FailurePatternOperator.ROLLBACK_CASCADE_TIMEOUT_TAG,
+                "DEPLOY_ROLLBACK_CASCADE");
 
-        // Full match alerts
-        cepAlerts.addSink(new PostgresStringSink("FAILURE_PATTERN"))
-                 .name("postgres-sink-cep-alerts")
-                 .setParallelism(4);
-        // Grafana annotation for each pattern detection
-        cepAlerts
-                .map(json -> buildAlertMetric(json,
-                        MetricResult.MetricType.FAILURE_PATTERN_DETECTED))
-                .addSink(new GrafanaSink())
-                .name("grafana-sink-cep-alerts")
-                .setParallelism(4);
+        sinkCepPattern(
+                FailurePatternOperator.detectDeploymentInstability(keyedForCep),
+                FailurePatternOperator.DEPLOY_INSTABILITY_TIMEOUT_TAG,
+                "DEPLOY_INSTABILITY");
 
-        // Timeout alerts (partial patterns)
-        DataStream<String> timeouts =
-                cepAlerts.getSideOutput(FailurePatternOperator.TIMEOUT_TAG);
-        timeouts.addSink(new PostgresStringSink("PATTERN_TIMEOUT"))
-                .name("postgres-sink-cep-timeouts")
-                .setParallelism(4);
+        sinkCepPattern(
+                FailurePatternOperator.detectBuildOkDeployBroken(keyedForCep),
+                FailurePatternOperator.BUILD_OK_DEPLOY_BROKEN_TIMEOUT_TAG,
+                "BUILD_OK_DEPLOY_BROKEN");
 
         // ── Execute ───────────────────────────────────────────────────────────
         env.execute("CI/CD Pipeline Observability — Postgres + Grafana");
@@ -196,6 +193,39 @@ public class PipelineObservabilityJob {
         // 2. Grafana annotations (only for significant events — filtered inside GrafanaSink)
         stream.addSink(new GrafanaSink())
               .name("grafana-sink-" + name)
+              .setParallelism(4);
+    }
+
+    /**
+     * Wires one CEP pattern's complete-match stream to Postgres + Grafana,
+     * and its timeout side output (partial matches) to Postgres, using
+     * {@code alertTypeBase} for the complete-match rows and
+     * {@code alertTypeBase + "_TIMEOUT"} for the partial-match rows.
+     */
+    private static void sinkCepPattern(SingleOutputStreamOperator<String> alerts,
+                                        OutputTag<String> timeoutTag,
+                                        String alertTypeBase) {
+        // Complete matches
+        alerts.addSink(new PostgresStringSink(alertTypeBase))
+              .name("postgres-sink-cep-" + alertTypeBase.toLowerCase())
+              .setParallelism(4);
+        alerts
+              .map(json -> buildAlertMetric(json,
+                      MetricResult.MetricType.FAILURE_PATTERN_DETECTED))
+              .addSink(new GrafanaSink())
+              .name("grafana-sink-cep-" + alertTypeBase.toLowerCase())
+              .setParallelism(4);
+
+        // Timeouts (partial matches)
+        DataStream<String> timeouts = alerts.getSideOutput(timeoutTag);
+        timeouts.addSink(new PostgresStringSink(alertTypeBase + "_TIMEOUT"))
+                .name("postgres-sink-cep-" + alertTypeBase.toLowerCase() + "-timeout")
+                .setParallelism(4);
+        timeouts
+              .map(json -> buildAlertMetric(json,
+                      MetricResult.MetricType.PATTERN_TIMEOUT))
+              .addSink(new GrafanaSink())
+              .name("grafana-sink-cep-" + alertTypeBase.toLowerCase() + "-timeout")
               .setParallelism(4);
     }
 
