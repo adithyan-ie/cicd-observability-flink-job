@@ -87,6 +87,7 @@ LIFECYCLE_PATTERNS = {
     "pattern_1_deploy_success": [
         ("BUILD_STARTED",  "SUCCESS", "BUILD"),
         ("TEST_STARTED",   "SUCCESS", "TEST"),
+        ("TEST_SUCCESS",   "SUCCESS", "TEST"),
         ("DEPLOY_SUCCESS", "SUCCESS", "DEPLOY"),
     ],
     "pattern_2_build_failed": [
@@ -97,19 +98,28 @@ LIFECYCLE_PATTERNS = {
     "pattern_3_full_success": [
         ("BUILD_STARTED",  "SUCCESS", "BUILD"),
         ("TEST_STARTED",   "SUCCESS", "TEST"),
+        ("TEST_SUCCESS",   "SUCCESS", "TEST"),
         ("BUILD_SUCCESS",  "SUCCESS", "BUILD"),
         ("DEPLOY_SUCCESS", "SUCCESS", "DEPLOY"),
     ],
     "pattern_4_deploy_failed": [
         ("BUILD_STARTED",  "SUCCESS", "BUILD"),
         ("TEST_STARTED",   "SUCCESS", "TEST"),
+        ("TEST_SUCCESS",   "SUCCESS", "TEST"),
         ("BUILD_SUCCESS",  "SUCCESS", "BUILD"),
         ("DEPLOY_FAILED",  "FAILURE", "DEPLOY"),
+    ],
+    # Tests run and fail — pipeline stops here, no BUILD_SUCCESS/DEPLOY_*
+    # (a failed test run never reaches build/deploy in this simplified model).
+    "pattern_5_test_failed": [
+        ("BUILD_STARTED", "SUCCESS", "BUILD"),
+        ("TEST_STARTED",  "SUCCESS", "TEST"),
+        ("TEST_FAILED",   "FAILURE", "TEST"),
     ],
 }
 
 PATTERN_NAMES   = list(LIFECYCLE_PATTERNS.keys())
-PATTERN_WEIGHTS = [25, 25, 30, 20]
+PATTERN_WEIGHTS = [20, 20, 25, 15, 20]
 
 
 # ════════════════════════════════════════════════════════════════════════════

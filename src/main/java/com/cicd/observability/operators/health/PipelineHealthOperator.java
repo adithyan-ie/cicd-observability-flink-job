@@ -132,29 +132,46 @@ public class PipelineHealthOperator {
         long minFlinkReceivedAtMs = 0;
     }
 
+    /**
+     * Only a terminal outcome (event_type ending _SUCCESS/_FAILED/_FAILURE)
+     * counts as a sample. A _STARTED event isn't a pass or a fail yet — its
+     * own terminal event will show up later in the same window/lifecycle —
+     * so counting it too would double-count that stage and, worse, count
+     * it as a "success" purely because _STARTED events carry a placeholder
+     * status of SUCCESS (there's no real outcome yet to report).
+     */
+    private static boolean isTerminalOutcome(String eventType) {
+        return eventType != null
+                && (eventType.endsWith("_SUCCESS")
+                 || eventType.endsWith("_FAILED")
+                 || eventType.endsWith("_FAILURE"));
+    }
+
     /** Shared by both streams so the live and historical scores can never drift apart. */
     private static void accumulate(HealthAcc acc, CicdEvent e) {
+        String et = e.getEventType();
+        if (!isTerminalOutcome(et)) {
+            return;
+        }
+
         acc.serviceName = e.getServiceName();
         acc.minFlinkReceivedAtMs = SourceTiming.earliest(acc.minFlinkReceivedAtMs, e.getFlinkReceivedAtMs());
-        String et = e.getEventType();
 
-        if (et != null) {
-            if (et.startsWith("BUILD_")) {
-                acc.buildTotal++;
-                if (e.isSuccess()) acc.buildSuccess++;
-            } else if (et.startsWith("TEST_")) {
-                acc.testTotal++;
-                if (e.isSuccess()) acc.testSuccess++;
-            } else if (et.startsWith("SONARQUBE_")) {
-                acc.sonarTotal++;
-                if (e.isSuccess()) acc.sonarSuccess++;
-            } else if (et.startsWith("PACKAGE_")) {
-                acc.pkgTotal++;
-                if (e.isSuccess()) acc.pkgSuccess++;
-            } else if (et.startsWith("DEPLOY_")) {
-                acc.deployTotal++;
-                if (e.isSuccess()) acc.deploySuccess++;
-            }
+        if (et.startsWith("BUILD_")) {
+            acc.buildTotal++;
+            if (e.isSuccess()) acc.buildSuccess++;
+        } else if (et.startsWith("TEST_")) {
+            acc.testTotal++;
+            if (e.isSuccess()) acc.testSuccess++;
+        } else if (et.startsWith("SONARQUBE_")) {
+            acc.sonarTotal++;
+            if (e.isSuccess()) acc.sonarSuccess++;
+        } else if (et.startsWith("PACKAGE_")) {
+            acc.pkgTotal++;
+            if (e.isSuccess()) acc.pkgSuccess++;
+        } else if (et.startsWith("DEPLOY_")) {
+            acc.deployTotal++;
+            if (e.isSuccess()) acc.deploySuccess++;
         }
     }
 

@@ -268,7 +268,7 @@
     {
       "id": 13,
       "title": "Flink Processing Latency (ms, total span per metric type)",
-      "description": "For each metric_type, MAX(inserted_at) - MIN(flink_received_at) across every row of that type in the selected time range — the full wall-clock duration this metric type took to work through the whole push, from the earliest contributing event Flink ever saw for it to the last result it wrote. Both bounds are scoped by the same $__timeFilter(inserted_at) as every other panel here — pick a time range that covers just the push you care about, or a wider one will pull in older rows too. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()); for paired/windowed metric types a given row's flink_received_at is already the EARLIEST contributing event's receive time (see SourceTiming.earliest()), so MIN() here is the earliest of those per-row earliest times. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than pulling in a bogus multi-decade span.",
+      "description": "For each metric_type, MAX(inserted_at) - MIN(flink_received_at) across every row of that type in the selected time range — the full wall-clock duration this metric type took to work through the whole push, from the earliest contributing event Flink ever saw for it to the last result it wrote. Both bounds are scoped by the same $__timeFilter(inserted_at) as every other panel here — pick a time range that covers just the push you care about, or a wider one will pull in older rows too. flink_received_at is the wall-clock time CicdEventDeserializer deserialised the record (System.currentTimeMillis()); for paired/windowed metric types a given row's flink_received_at is already the EARLIEST contributing event's receive time (see SourceTiming.earliest()), so MIN() here is the earliest of those per-row earliest times. Rows with flink_received_at IS NULL (unset, see PostgresMetricSink) are excluded rather than pulling in a bogus multi-decade span. Both PIPELINE_HEALTH_SCORE and PIPELINE_HEALTH_SCORE_LIVE are excluded — the live one is band-change-gated (see PipelineHealthOperator.filterChanged()) and the windowed one only fires on its own 30-min tumbling-window close, so neither's span here reflects engine throughput.",
       "type": "table",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 56 },
       "datasource": { "type": "postgres", "uid": "postgres_cicd" },
@@ -277,7 +277,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT metric_type, EXTRACT(EPOCH FROM (MAX(inserted_at) - MIN(flink_received_at))) * 1000 AS span_ms FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND $__timeFilter(inserted_at) GROUP BY metric_type ORDER BY span_ms DESC",
+          "rawSql": "SELECT metric_type, EXTRACT(EPOCH FROM (MAX(inserted_at) - MIN(flink_received_at))) * 1000 AS span_ms FROM cicd_metrics WHERE flink_received_at IS NOT NULL AND metric_type NOT IN ('PIPELINE_HEALTH_SCORE', 'PIPELINE_HEALTH_SCORE_LIVE') AND $__timeFilter(inserted_at) GROUP BY metric_type ORDER BY span_ms DESC",
           "rawQuery": true
         }
       ]
