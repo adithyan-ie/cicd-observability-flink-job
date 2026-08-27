@@ -14,8 +14,8 @@
         <java.version>17</java.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
-        <flink.version>1.18.1</flink.version>
-        <kafka.connector.version>3.1.0-1.18</kafka.connector.version>
+        <flink.version>1.20.5</flink.version>
+        <kafka.connector.version>3.4.0-1.20</kafka.connector.version>
         <jackson.version>2.16.1</jackson.version>
         <slf4j.version>2.0.11</slf4j.version>
         <postgresql.version>42.7.2</postgresql.version>

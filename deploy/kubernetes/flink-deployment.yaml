@@ -70,7 +70,7 @@ spec:
 
   serviceAccount: flink-service-account
 
-  flinkVersion: v1_18
+  flinkVersion: v1_20
 
   flinkConfiguration:
     # Everything else (checkpoint dir, RocksDB, restart strategy, Java opts)

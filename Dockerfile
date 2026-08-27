@@ -24,7 +24,7 @@ COPY src ./src
 RUN mvn clean package -DskipTests -q
 
 # ── Stage 2: Flink runtime ─────────────────────────────────────────────────────
-FROM flink:1.18.1-java17
+FROM flink:1.20.5-java17
 
 # The JAR goes into /opt/flink/usrlib — Flink Application Mode scans this
 # directory automatically and submits the job when JobManager starts.

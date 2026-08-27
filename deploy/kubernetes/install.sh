@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FLINK_OPERATOR_VERSION=1.9.0
+FLINK_OPERATOR_VERSION=1.15.0
 
 sudo dnf update -y
 sudo dnf install -y docker git gettext
