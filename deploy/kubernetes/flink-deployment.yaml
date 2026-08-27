@@ -4,15 +4,17 @@
 # Replaces deploy/AWS/flink-job/docker-compose.yml, talking outbound to the
 # data-layer EC2 the same way (DATA_LAYER_HOST:9092/5432/3000).
 #
-# Build the image locally and load it into containerd (no registry, no pull):
-#   docker build -t cicd-flink-analytics:latest .
-#   docker save cicd-flink-analytics:latest -o /tmp/cicd-flink-analytics.tar
-#   sudo k3s ctr images import /tmp/cicd-flink-analytics.tar
-#   # (plain containerd: sudo ctr -n k8s.io images import /tmp/cicd-flink-analytics.tar)
+# Build the image locally and load it into containerd (no registry, no pull) —
+# from inside deploy/kubernetes, with the repo root as the build context:
+#   docker build -t cicd-flink-analytics:latest ../..
+#   docker save cicd-flink-analytics:latest | sudo k3s ctr images import -
+#   docker rmi cicd-flink-analytics:latest
+#
+# Or just run deploy-flink-job.sh in this same folder, which does all of the above.
 #
 # Deploy — DATA_LAYER_HOST must match deploy/AWS/data-layer/.env's value:
 #   export DATA_LAYER_HOST=<data-layer-ec2-ip>
-#   envsubst < deploy/kubernetes/flink-deployment.yaml | kubectl apply -f -
+#   envsubst < flink-deployment.yaml | kubectl apply -f -
 #
 # Requires the Flink Kubernetes Operator already installed on the cluster
 # (helm install flink-kubernetes-operator ...) with its CRDs.
@@ -110,7 +112,12 @@ spec:
     high-availability.type: kubernetes
     high-availability.storageDir: file:///tmp/flink-ha
     taskmanager.numberOfTaskSlots: "4"
-    kubernetes.cluster-id: cicd-flink-analytics
+
+    # Required by the operator for last-state upgrade mode — it needs to know
+    # where to find checkpoint data to restore from on redeploy.
+    execution.checkpointing.dir: file:///tmp/flink-checkpoints
+    # kubernetes.cluster-id is derived by the operator from metadata.name —
+    # setting it explicitly is a forbidden key as of operator 1.15.0.
 
   jobManager:
     resource:
