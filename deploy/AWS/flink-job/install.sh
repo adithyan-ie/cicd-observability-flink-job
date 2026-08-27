@@ -28,4 +28,9 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 export KUBECONFIG=/home/ec2-user/.kube/config
 helm repo add flink-operator-repo https://downloads.apache.org/flink/flink-kubernetes-operator-${FLINK_OPERATOR_VERSION}/
 helm repo update
-helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator
+# webhook.create=false: the chart's admission webhook needs cert-manager (for
+# its self-signed Certificate/Issuer) which isn't installed on this cluster.
+# The webhook only validates FlinkDeployment specs at admission time — not
+# required for the operator or job to run.
+helm install flink-kubernetes-operator flink-operator-repo/flink-kubernetes-operator \
+  --set webhook.create=false
