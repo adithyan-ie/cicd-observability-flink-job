@@ -23,6 +23,11 @@ sudo cp /etc/rancher/k3s/k3s.yaml /home/ec2-user/.kube/config
 sudo chown ec2-user:ec2-user /home/ec2-user/.kube/config
 sudo chmod 600 /home/ec2-user/.kube/config
 
+# Persist KUBECONFIG for future logins — k3s's bundled kubectl otherwise
+# defaults to /etc/rancher/k3s/k3s.yaml, which ec2-user can't read (root-owned).
+grep -qxF 'export KUBECONFIG=/home/ec2-user/.kube/config' /home/ec2-user/.bashrc || \
+  echo 'export KUBECONFIG=/home/ec2-user/.kube/config' >> /home/ec2-user/.bashrc
+
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 export KUBECONFIG=/home/ec2-user/.kube/config
