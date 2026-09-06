@@ -15,6 +15,11 @@
 #              Jenkins can no longer `docker exec` into a container running
 #              on a different EC2).
 #
+#              This does mean the Jenkins container itself needs a Docker
+#              CLI to run that `docker exec` (docker-outside-of-docker,
+#              via the docker.sock mount below) plus python3 for the event
+#              JSON formatting — see ./Dockerfile.
+#
 # Fully self-contained — unlike data-layer/flink-job, this stack needs
 # nothing else from the repo at runtime, so you can copy just this folder
 # to the instance if you prefer:
@@ -43,9 +48,13 @@ services:
 
   # ── Jenkins ────────────────────────────────────────────────────────────────
   jenkins:
-    image: jenkins/jenkins:lts
+    build: .
     container_name: jenkins
     restart: unless-stopped
+    # Runs as root so the mounted docker.sock below is usable no matter what
+    # group owns it on the host — pipeline stages need `docker exec kcat ...`
+    # to work without fiddling with matching GIDs on every instance.
+    user: root
     environment:
       # Skip the interactive setup wizard — init.groovy.d/basic-security.groovy
       # creates the admin user (hardcoded admin/admin) instead.
@@ -56,6 +65,10 @@ services:
     volumes:
       - jenkins-data:/var/jenkins_home
       - ./init.groovy.d:/usr/share/jenkins/ref/init.groovy.d:ro
+      # Docker-outside-of-docker: lets pipeline stages run `docker exec kcat
+      # ...` against the host's Docker daemon (and thus the sibling kcat
+      # container below) without a Docker client running inside Jenkins.
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - jenkins-net
 
