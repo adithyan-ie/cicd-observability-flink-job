@@ -22,6 +22,12 @@
 #   cp .env.example .env   # then edit DATA_LAYER_HOST — see below
 #   docker compose up -d
 #
+# ── Admin login ────────────────────────────────────────────────────────────
+# init.groovy.d/basic-security.groovy creates the admin account (admin/admin)
+# on first boot and skips the setup wizard. Only applies to a fresh
+# jenkins-data volume — change the password from the Jenkins UI after first
+# login, not by editing the script.
+#
 # ── Cross-EC2 networking ──────────────────────────────────────────────────
 # DATA_LAYER_HOST must match the data-layer instance's own DATA_LAYER_HOST
 # (deploy/AWS/data-layer/.env) — private IP if same VPC, public/Elastic IP
@@ -40,11 +46,16 @@ services:
     image: jenkins/jenkins:lts
     container_name: jenkins
     restart: unless-stopped
+    environment:
+      # Skip the interactive setup wizard — init.groovy.d/basic-security.groovy
+      # creates the admin user (hardcoded admin/admin) instead.
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
     ports:
       - "8080:8080"    # http://<this-instance>:8080
       - "50000:50000"  # inbound agent port, if you attach build agents later
     volumes:
       - jenkins-data:/var/jenkins_home
+      - ./init.groovy.d:/usr/share/jenkins/ref/init.groovy.d:ro
     networks:
       - jenkins-net
 
