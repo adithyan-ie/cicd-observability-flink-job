@@ -16,48 +16,6 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
-/**
- * PostgreSQL sink for all four use case results.
- *
- * One RichSinkFunction handles every MetricType — it opens a single
- * JDBC connection per TaskManager slot (in open()) and closes it
- * in close().  Flink guarantees open()/close() lifecycle per slot.
- *
- * Table schema (run once):
- * ──────────────────────────────────────────────────────────────────
- *  CREATE TABLE cicd_metrics (
- *      id               BIGSERIAL PRIMARY KEY,
- *      metric_type      VARCHAR(60)   NOT NULL,
- *      pipeline_id      VARCHAR(200)  NOT NULL,
- *      service_name     VARCHAR(200),
- *      window_start_ms  BIGINT,
- *      window_end_ms    BIGINT,
- *      value            DOUBLE PRECISION,
- *      performance_band VARCHAR(20),
- *      sample_count     BIGINT,
- *      detail           TEXT,
- *      computed_at_ms   BIGINT,
- *      flink_received_at TIMESTAMPTZ,
- *      inserted_at      TIMESTAMPTZ   DEFAULT NOW()
- *  );
- *
- *  CREATE INDEX idx_cicd_metrics_type_pipeline
- *      ON cicd_metrics (metric_type, pipeline_id);
- *  CREATE INDEX idx_cicd_metrics_window
- *      ON cicd_metrics (window_start_ms, window_end_ms);
- *  CREATE UNIQUE INDEX ux_cicd_metrics_window
- *      ON cicd_metrics (metric_type, pipeline_id, window_start_ms, window_end_ms);
- *
- *  Late-event audit rows (see LateEventOperator) use their own specific
- *  metric_type per source metric (e.g. DEPLOYMENT_FREQUENCY_LATE_EVENTS),
- *  so metric_type alone keeps them from colliding with each other or with
- *  the real metric row on this index — no extra column needed.
- * ──────────────────────────────────────────────────────────────────
- * Recomputing the same window (e.g. after a job restart replays the Kafka
- * backlog) UPSERTs via ON CONFLICT instead of inserting a duplicate row.
- *
- * For the CEP / late-event string alerts, use PostgresStringSink below.
- */
 public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
 
     private static final long serialVersionUID = 1L;
@@ -85,21 +43,15 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
     private transient Connection connection;
     private transient PreparedStatement statement;
 
-    // ── Constructors ───────────────────────────────────────────────────
-
-    /** Uses values from FlinkConfig (default). */
     public PostgresMetricSink() {
         this(FlinkConfig.PG_URL, FlinkConfig.PG_USER, FlinkConfig.PG_PASSWORD);
     }
 
-    /** Explicit connection params (for testing with a different DB). */
     public PostgresMetricSink(String url, String user, String password) {
         this.url      = url;
         this.user     = user;
         this.password = password;
     }
-
-    // ── Lifecycle ──────────────────────────────────────────────────────
 
     @Override
     public void open(Configuration parameters) throws Exception {
@@ -126,12 +78,7 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
             statement.setLong(8,    metric.getSampleCount());
             statement.setString(9,  metric.getDetail());
             statement.setLong(10,   metric.getComputedAtMs());
-            // 0 means "unset" (see MetricResult.flinkReceivedAtMs) — store
-            // NULL rather than epoch 0 (1970-01-01), so latency queries
-            // against this column don't get a bogus multi-decade value for
-            // those rows. Timestamp (not OffsetDateTime) so the JDBC driver
-            // writes it as an instant, independent of session timezone —
-            // correct for a TIMESTAMPTZ column either way.
+
             if (metric.getFlinkReceivedAtMs() == 0) {
                 statement.setNull(11, Types.TIMESTAMP_WITH_TIMEZONE);
             } else {
@@ -144,7 +91,7 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
 
         } catch (SQLException e) {
             LOG.error("Failed to insert metric: {}", metric, e);
-            // Re-throw so Flink retries from last checkpoint
+
             throw new RuntimeException("PostgreSQL insert failed", e);
         }
     }
@@ -160,7 +107,6 @@ public class PostgresMetricSink extends RichSinkFunction<MetricResult> {
         return s == null ? "" : s;
     }
 
-    /** Parses the model's ISO LocalDateTime string (UTC, no zone suffix) back to epoch millis. */
     private static Long toEpochMs(String isoLocalDateTime) {
         if (isoLocalDateTime == null || isoLocalDateTime.isEmpty()) return null;
         try {

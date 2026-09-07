@@ -14,29 +14,6 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 
-/**
- * Deserialises the compact JSON produced by the Jenkins stageEvent() function.
- *
- * The Jenkins pipeline wraps the event inside a top-level object:
- * {
- *   "analysis_name": "...",
- *   "event": { <-- actual CicdEvent fields live here
- *     "event_id": "...",
- *     "event_type": "BUILD_STARTED",
- *     ...
- *   }
- * }
- *
- * This deserialiser unwraps the "event" node and maps it to CicdEvent,
- * then parses event_timestamp → timestampMs for Flink event-time processing.
- *
- * CicdEvent.flinkReceivedAtMs is stamped here via System.currentTimeMillis(),
- * never from anything in the JSON payload: a per-record field would let a
- * buggy or malicious producer (a Jenkins job, a manual kcat push, a
- * load-test script with a clock bug) forge or omit its own "when I sent
- * this" claim. This is the trustworthy source for Flink's own processing
- * latency (inserted_at - flinkReceivedAtMs in cicd_metrics).
- */
 public class CicdEventDeserializer implements KafkaRecordDeserializationSchema<CicdEvent> {
 
     private static final long serialVersionUID = 1L;
@@ -57,17 +34,15 @@ public class CicdEventDeserializer implements KafkaRecordDeserializationSchema<C
         try {
             JsonNode root = mapper.readTree(message);
 
-            // Handle both wrapped {"event": {...}} and flat {...} payloads
             JsonNode eventNode = root.has("event") ? root.get("event") : root;
 
             CicdEvent event = mapper.treeToValue(eventNode, CicdEvent.class);
 
-            // Parse ISO-8601 timestamp → epoch milliseconds for Flink watermark
             if (event.getEventTimestamp() != null && !event.getEventTimestamp().isEmpty()) {
                 try {
                     event.setTimestampMs(Instant.parse(event.getEventTimestamp()).toEpochMilli());
                 } catch (Exception e) {
-                    // Fall back to processing time
+
                     event.setTimestampMs(Instant.now().toEpochMilli());
                     LOG.warn("Could not parse timestamp '{}', using processing time",
                             event.getEventTimestamp());
@@ -76,9 +51,6 @@ public class CicdEventDeserializer implements KafkaRecordDeserializationSchema<C
                 event.setTimestampMs(Instant.now().toEpochMilli());
             }
 
-            // Wall-clock time this record was actually deserialised by
-            // Flink — see class javadoc for why this always wins over
-            // anything the producer put in the payload.
             event.setFlinkReceivedAtMs(System.currentTimeMillis());
 
             out.collect(event);

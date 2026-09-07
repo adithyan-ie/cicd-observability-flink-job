@@ -21,12 +21,6 @@ import java.util.List;
 
 import static org.junit.Assert.*;
 
-/**
- * JUnit tests for DORA metric operators.
- *
- * Uses Flink's local StreamExecutionEnvironment — no cluster needed.
- * Events are created as bounded collections so the job terminates.
- */
 public class DoraOperatorsTest {
 
     private StreamExecutionEnvironment env;
@@ -36,11 +30,9 @@ public class DoraOperatorsTest {
     @Before
     public void setUp() {
         env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(1);  // single-threaded for deterministic test output
+        env.setParallelism(1);
         base = LocalDateTime.parse("2026-07-08T23:07:00");
     }
-
-    // ── Helpers ────────────────────────────────────────────────────────
 
     private CicdEvent event(String pipelineId, String serviceName,
                             String eventType, String status, LocalDateTime eventTime) {
@@ -57,13 +49,8 @@ public class DoraOperatorsTest {
 
     private long nowMs() { return System.currentTimeMillis(); }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Deployment Frequency
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testDeploymentFrequency_countsSuccessfulDeployments() throws Exception {
-
 
         List<CicdEvent> events = List.of(
                 event("pipe-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
@@ -93,7 +80,7 @@ public class DoraOperatorsTest {
         MetricResult firstWindow = results.get(0);
         assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY, firstWindow.getMetricType());
         assertEquals("pipe-1", firstWindow.getPipelineId());
-        // 2 successful deploys in 1-day window → deploysPerDay = 2.0
+
         assertTrue("Deploy frequency should be > 0", firstWindow.getValue() > 0);
         assertTrue("Expected deployment frequency is", firstWindow.getValue() == 3.0);
     }
@@ -108,24 +95,20 @@ public class DoraOperatorsTest {
 
         List<MetricResult> results = new ArrayList<>();
         env.fromCollection(events);
-        // DeploymentFrequencyOperator filters for DEPLOY_SUCCESS only
-        // With no DEPLOY_SUCCESS events, no metric should be emitted
+
         DataStream<CicdEvent> stream = env.fromCollection(events);
         DeploymentFrequencyOperator
                 .compute(stream, Time.days(1))
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // No DEPLOY_SUCCESS events → no deployment frequency metric
         assertTrue("No DEPLOY_SUCCESS events should produce no metric",
                 results.isEmpty());
     }
 
     @Test
     public void testDeploymentFrequency_historyShowsDistinctCountPerWindow() throws Exception {
-        // Window size 10s. 3 deploys land in the first window, 2 in the
-        // next one (base+15s/+16s are guaranteed to be in a later window
-        // since the offset exceeds the 10s window size).
+
         List<CicdEvent> events = List.of(
                 event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
                 event("pipe-hist-1", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
@@ -154,10 +137,6 @@ public class DoraOperatorsTest {
                 2.0, results.get(1).getValue(), 0.0001);
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Live deployment counter (separate from the historical window above)
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testLiveDeployCounter_incrementsPerEventWithinWindow() throws Exception {
         List<CicdEvent> events = List.of(
@@ -177,9 +156,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // The window is still open when the bounded stream ends, so Flink's
-        // final watermark flush fires its close-timer too, appending one
-        // trailing reset (sampleCount=0) after the three real increments.
         assertEquals(4, results.size());
         assertEquals(MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE, results.get(0).getMetricType());
         assertEquals(1L, results.get(0).getSampleCount());
@@ -191,9 +167,7 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLiveDeployCounter_resetsWhenWindowCloses() throws Exception {
-        // Window size 10s. First two events land in the same window; the
-        // third is 15s later — past the boundary — so the counter must
-        // restart at 1 instead of continuing to 3.
+
         List<CicdEvent> events = List.of(
                 event("pipe-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
                 event("pipe-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(1)),
@@ -211,12 +185,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Window 1's close-timer must be cancelled when the +15s event rolls
-        // the window over early — otherwise it fires as a stale 0 right
-        // after window 2's real count=1 and overwrites it (this was the bug:
-        // the live tile showed 0 instead of 1 for the newly opened window).
-        // So the only reset here is the genuine end-of-stream close of
-        // window 2 — asserting on raw order/size now pins that down.
         assertEquals(4, results.size());
         assertEquals(1L, results.get(0).getSampleCount());
         assertEquals(2L, results.get(1).getSampleCount());
@@ -228,9 +196,7 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLiveDeployCounter_dropsLateEventsInsteadOfMiscountingIntoNewWindow() throws Exception {
-        // Window size 10s. Event at +15s opens window 2 (count=1). A late
-        // event at +5s (belongs to window 1, already closed) arrives next —
-        // it must be dropped, not added to window 2's count as a 2nd deploy.
+
         List<CicdEvent> events = List.of(
                 event("pipe-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15)),
                 event("pipe-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(5)),
@@ -248,9 +214,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // The late event (+5s) should have been silently dropped — only
-        // the two window-2 events (+15s, +16s) produce increments. Window 2
-        // is still open at end-of-stream, so one trailing reset also fires.
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
         assertEquals(1L, increments.get(0).getSampleCount());
@@ -258,10 +221,6 @@ public class DoraOperatorsTest {
                 2L, increments.get(1).getSampleCount());
         assertEquals(3, results.size());
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Live Change Failure Rate (same pattern as the live deploy counter)
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testLiveCfr_updatesRatePerEventWithinWindow() throws Exception {
@@ -281,8 +240,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Window is still open at end-of-stream, so one trailing reset
-        // (sampleCount=0) follows the two real increments.
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         assertEquals(2, increments.size());
         assertEquals(MetricResult.MetricType.CHANGE_FAILURE_RATE_LIVE, increments.get(0).getMetricType());
@@ -295,9 +252,7 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLiveCfr_resetsWhenWindowCloses() throws Exception {
-        // Window size 10s. First window: 1 failure out of 2 = 50%. Third
-        // event is 15s later — past the boundary — so the tally must
-        // restart (1 failure out of 1 = 100%), not accumulate to 2/3.
+
         List<CicdEvent> events = List.of(
                 event("pipe-cfr-live-2", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base),
                 event("pipe-cfr-live-2", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(1)),
@@ -315,13 +270,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Window 1's close-timer must be cancelled when the +15s event rolls
-        // the window over early — otherwise it fires as a stale 0% right
-        // after window 2's real 100% and overwrites it (mirrors the deploy
-        // frequency bug: the live tile would show 0 instead of the correct
-        // in-progress rate for the newly opened window). So the only reset
-        // here is the genuine end-of-stream close of window 2 — asserting
-        // on raw order/size pins that down.
         assertEquals(4, results.size());
         assertEquals(50.0, results.get(1).getValue(), 0.0001);
         assertEquals("New window should restart at 1 failure / 1 total = 100%, not 2/3",
@@ -335,7 +283,7 @@ public class DoraOperatorsTest {
     public void testLiveCfr_dropsLateEventsInsteadOfMiscountingIntoNewWindow() throws Exception {
         List<CicdEvent> events = List.of(
                 event("pipe-cfr-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(15)),
-                event("pipe-cfr-live-3", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(5)), // late
+                event("pipe-cfr-live-3", "svc-a", "DEPLOY_FAILED",  "FAILURE", base.plusSeconds(5)),
                 event("pipe-cfr-live-3", "svc-a", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(16))
         );
 
@@ -350,8 +298,6 @@ public class DoraOperatorsTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Window 2 is still open at end-of-stream, so one trailing reset
-        // (sampleCount=0) follows the two real increments.
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
         assertEquals("Late failure must not be folded into window 2's rate",
@@ -360,20 +306,16 @@ public class DoraOperatorsTest {
         assertEquals(3, results.size());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Lead Time for Changes
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testLeadTime_computedCorrectly() throws Exception {
         base = LocalDateTime.now();
-        var deployTime     = base.plusMinutes(20); // 20 minutes later
+        var deployTime     = base.plusMinutes(20);
 
         CicdEvent build = event("pipe-3", "svc-c", "BUILD_STARTED", "SUCCESS", base);
         build.setCommitSha("abc123");
 
         CicdEvent deploy = event("pipe-3", "svc-c", "DEPLOY_SUCCESS", "SUCCESS", deployTime);
-        deploy.setCommitSha("abc123"); // same commit — should be matched
+        deploy.setCommitSha("abc123");
 
         List<MetricResult> results = new ArrayList<>();
         env.fromCollection(List.of(build, deploy))
@@ -386,8 +328,8 @@ public class DoraOperatorsTest {
         assertFalse("Expected lead time metric", results.isEmpty());
         MetricResult r = results.get(0);
         assertEquals(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES, r.getMetricType());
-        // 90 minutes lead time
-        assertEquals(20.0, r.getValue(), 1.0);  // ±1 minute tolerance
+
+        assertEquals(20.0, r.getValue(), 1.0);
     }
 
     @Test
@@ -395,7 +337,7 @@ public class DoraOperatorsTest {
         CicdEvent build  = event("pipe-4", "svc-d", "BUILD_STARTED",  "SUCCESS", base);
         build.setCommitSha("sha-A");
         CicdEvent deploy = event("pipe-4", "svc-d", "DEPLOY_SUCCESS", "SUCCESS", base.plusSeconds(5));
-        deploy.setCommitSha("sha-B"); // different commit — no match
+        deploy.setCommitSha("sha-B");
 
         List<MetricResult> results = new ArrayList<>();
         DoraOperators.leadTime(env.fromCollection(List.of(build, deploy)))
@@ -408,11 +350,7 @@ public class DoraOperatorsTest {
 
     @Test
     public void testLeadTime_failedDeployDoesNotLeakStateOrMatchLaterCommit() throws Exception {
-        // Commit A builds, but its deploy fails (e.g. bad configmap). A fix
-        // ships as commit B, which builds and deploys successfully. Only B
-        // should produce a lead time sample — A's build-start entry must be
-        // cleaned up on DEPLOY_FAILED, not linger and (if commit SHAs were
-        // ever reused) wrongly pair with an unrelated later deploy.
+
         CicdEvent buildA  = event("pipe-6", "svc-f", "BUILD_STARTED", "SUCCESS", base);
         buildA.setCommitSha("sha-A");
         CicdEvent deployFailA = event("pipe-6", "svc-f", "DEPLOY_FAILED", "FAILURE", base.plusMinutes(5));
@@ -431,16 +369,12 @@ public class DoraOperatorsTest {
 
         assertEquals("Only commit B's successful deploy should produce a sample",
                 1, results.size());
-        assertEquals(15.0, results.get(0).getValue(), 1.0); // buildB -> deploySuccessB = 15 min
+        assertEquals(15.0, results.get(0).getValue(), 1.0);
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Change Failure Rate
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testCfr_calculatesCorrectPercentage() throws Exception {
-        // 1 success + 1 failure = 50% CFR
+
         List<CicdEvent> events = List.of(
                 event("pipe-5", "svc-e", "DEPLOY_SUCCESS", "SUCCESS", base),
                 event("pipe-5", "svc-e", "DEPLOY_FAILED",  "FAILURE", base.plusMinutes(5))
@@ -460,7 +394,7 @@ public class DoraOperatorsTest {
         assertFalse("Expected CFR metric", results.isEmpty());
         MetricResult r = results.get(0);
         assertEquals(MetricResult.MetricType.CHANGE_FAILURE_RATE, r.getMetricType());
-        assertEquals(50.0, r.getValue(), 0.01); // exactly 50%
+        assertEquals(50.0, r.getValue(), 0.01);
     }
 
     @Test
@@ -485,13 +419,9 @@ public class DoraOperatorsTest {
         assertEquals("Elite", results.get(0).getPerformanceBand());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // MTTR
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testMttr_computedInMinutes() throws Exception {
-        var recoveryMs = base.plusMinutes(45); // 45 minutes
+        var recoveryMs = base.plusMinutes(45);
 
         List<CicdEvent> events = List.of(
                 event("pipe-7", "svc-g", "BUILD_FAILED",  "FAILURE", base),
@@ -513,15 +443,15 @@ public class DoraOperatorsTest {
         assertFalse("Expected MTTR metric", results.isEmpty());
         MetricResult r = results.get(0);
         assertEquals(MetricResult.MetricType.MEAN_TIME_TO_RECOVERY, r.getMetricType());
-        assertEquals(45.0, r.getValue(), 1.0); // ±1 minute
-        assertEquals("Elite", r.getPerformanceBand()); // < 60 minutes = Elite
+        assertEquals(45.0, r.getValue(), 1.0);
+        assertEquals("Elite", r.getPerformanceBand());
     }
 
     @Test
     public void testMttr_noSuccessAfterFailure_emitsNoMetric() throws Exception {
         List<CicdEvent> events = List.of(
                 event("pipe-8", "svc-h", "BUILD_FAILED", "FAILURE", base)
-                // No BUILD_SUCCESS follows
+
         );
 
         List<MetricResult> results = new ArrayList<>();
@@ -538,16 +468,12 @@ public class DoraOperatorsTest {
                 results.isEmpty());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Performance band classification
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testPerformanceBand_deployFreq() {
         MetricResult elite  = new MetricResult(MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
-                "p", "s", "0", "0", 2.0, 2);  // 2/day = Elite
+                "p", "s", "0", "0", 2.0, 2);
         MetricResult low    = new MetricResult(MetricResult.MetricType.DEPLOYMENT_FREQUENCY,
-                "p", "s", "0", "0", 0.01, 1); // < monthly = Low
+                "p", "s", "0", "0", 0.01, 1);
 
         assertEquals("Elite", elite.getPerformanceBand());
         assertEquals("Low",   low.getPerformanceBand());
@@ -556,11 +482,11 @@ public class DoraOperatorsTest {
     @Test
     public void testPerformanceBand_leadTime() {
         MetricResult elite = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", "0", "0", 30.0, 1);    // 30 min < 60 = Elite
+                "p", "s", "0", "0", 30.0, 1);
         MetricResult high  = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", "0", "0", 200.0, 1);   // 200 min < 1440 = High
+                "p", "s", "0", "0", 200.0, 1);
         MetricResult low   = new MetricResult(MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
-                "p", "s", "0", "0", 20000.0, 1); // > 1 week = Low
+                "p", "s", "0", "0", 20000.0, 1);
 
         assertEquals("Elite", elite.getPerformanceBand());
         assertEquals("High",  high.getPerformanceBand());

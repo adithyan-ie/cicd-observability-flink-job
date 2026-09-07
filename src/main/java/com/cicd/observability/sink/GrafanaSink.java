@@ -17,27 +17,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Grafana sink — pushes metric results to Grafana via two APIs:
- *
- *  1. Grafana Annotations API (/api/annotations)
- *     Used for discrete events: CEP pattern matches, late event detections,
- *     performance band changes.  These show as vertical lines in dashboards.
- *
- *  2. Grafana HTTP data source / JSON push endpoint
- *     Grafana itself doesn't have a native push endpoint for time-series,
- *     so we use the SimpleJson data source plugin or push to InfluxDB/Postgres
- *     which Grafana then reads.  This sink uses the Annotations API for
- *     direct Grafana pushes and relies on Postgres for the time-series panels.
- *
- * What Grafana shows:
- *   - Annotations: pattern detections, DORA band changes, late event spikes
- *   - Dashboards (via Postgres data source): all MetricResult values over time
- *
- * Note: For production, Grafana dashboards should be provisioned via
- *   grafana/dashboards/*.json and read from Postgres.
- *   This sink handles real-time annotations only.
- */
 public class GrafanaSink extends RichSinkFunction<MetricResult> {
 
     private static final long serialVersionUID = 1L;
@@ -48,8 +27,6 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
 
     private transient HttpClient  httpClient;
     private transient ObjectMapper mapper;
-
-    // ── Constructors ───────────────────────────────────────────────────
 
     public GrafanaSink() {
         this(FlinkConfig.GRAFANA_URL, FlinkConfig.GRAFANA_API_KEY);
@@ -69,25 +46,15 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
         LOG.info("GrafanaSink: connected to {}", grafanaUrl);
     }
 
-    // ── Main invoke ────────────────────────────────────────────────────
-
     @Override
     public void invoke(MetricResult metric, Context ctx) throws Exception {
         if (metric == null || metric.getMetricType() == null) return;
 
-        // Decide whether this metric warrants a Grafana annotation.
-        // Not every metric needs one — only significant events.
         if (shouldAnnotate(metric)) {
             postAnnotation(metric);
         }
     }
 
-    // ── Annotation logic ───────────────────────────────────────────────
-
-    /**
-     * Only post annotations for significant events, not every metric point.
-     * Posting every DORA data point as an annotation would clutter dashboards.
-     */
     private boolean shouldAnnotate(MetricResult metric) {
         switch (metric.getMetricType()) {
             case FAILURE_PATTERN_DETECTED:
@@ -96,7 +63,7 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
             case DEPLOYMENT_FREQUENCY_LATE_EVENTS:
             case CHANGE_FAILURE_RATE_LATE_EVENTS:
             case PIPELINE_HEALTH_SCORE_LATE_EVENTS:
-                return true;   // Always annotate discrete alerts
+                return true;
             case PIPELINE_HEALTH_SCORE:
                 return "Low".equals(metric.getPerformanceBand())
                     || "Elite".equals(metric.getPerformanceBand());
@@ -104,41 +71,18 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
             case LEAD_TIME_FOR_CHANGES:
             case CHANGE_FAILURE_RATE:
             case MEAN_TIME_TO_RECOVERY:
-                return true;   // Always annotate DORA metrics, regardless of band
+                return true;
             default:
                 return false;
         }
     }
 
-    /**
-     * Posts an annotation to Grafana using the Annotations REST API.
-     *
-     * Grafana Annotations API:
-     *   POST /api/annotations
-     *   {
-     *     "time":     <epoch ms>,
-     *     "timeEnd":  <epoch ms>,   // optional — for range annotations
-     *     "tags":     ["cicd", "dora", "pipeline-id"],
-     *     "text":     "Human-readable description",
-     *     "dashboardUID": "optional — pin to specific dashboard"
-     *   }
-     *
-     * The annotation appears as a vertical line (or region) in all Grafana
-     * dashboards that have annotations enabled, tagged with the metric type.
-     */
     private void postAnnotation(MetricResult metric) {
         try {
             Map<String, Object> annotation = new HashMap<>();
-//            annotation.put("time",    metric.getWindowEndMs() > 0
-//                    ? metric.getWindowEndMs() : metric.getComputedAtMs());
+
             annotation.put("tags",    buildTags(metric));
             annotation.put("text",    buildText(metric));
-
-            // For range annotations (e.g. MTTR duration)
-//            if (metric.getWindowStartMs() > 0 && metric.getWindowEndMs() > 0
-//                    && metric.getWindowEndMs() > metric.getWindowStartMs()) {
-//                annotation.put("timeEnd", metric.getWindowEndMs());
-//            }
 
             String body = mapper.writeValueAsString(annotation);
 
@@ -162,13 +106,10 @@ public class GrafanaSink extends RichSinkFunction<MetricResult> {
             }
 
         } catch (Exception e) {
-            // Don't crash the Flink job if Grafana is unavailable —
-            // metrics are already in Postgres and Kafka.
+
             LOG.warn("Failed to post Grafana annotation (non-fatal): {}", e.getMessage());
         }
     }
-
-    // ── Helpers ────────────────────────────────────────────────────────
 
     private List<String> buildTags(MetricResult metric) {
         return List.of(

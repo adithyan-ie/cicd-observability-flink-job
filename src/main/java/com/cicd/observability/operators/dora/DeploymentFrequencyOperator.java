@@ -22,37 +22,12 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
-/**
- * DORA Metric #1 — Deployment Frequency
- *
- * Two independent streams, computed and sunk separately:
- *   - {@link #compute}     → historical, DORA-accurate daily count (tumbling
- *     window, fires once per day + late corrections).
- *   - {@link #computeLive} → real-time counter for the live dashboard tile
- *     (no windowing — emits immediately on every deploy).
- *
- * Keeping these separate means the live tile updates instantly without
- * forcing the historical window to re-fire repeatedly (which previously
- * caused checkpoint-timeout instability when replaying a Kafka backlog).
- *
- * Truly-late events (beyond ALLOWED_LATENESS) are side-outputted via
- * TRULY_LATE_TAG rather than dropped — same pattern as
- * DoraOperators.changeFailureRate and PipelineHealthOperator.compute.
- * All three feed TrulyLateAuditOperator.auditTrulyLate() (see that class),
- * which is where the JSON audit record is built; wiring lives in
- * PipelineObservabilityJob.
- */
 public class DeploymentFrequencyOperator {
 
-    /** Deploy events too late even for the allowed-lateness grace period. */
     public static final OutputTag<CicdEvent> TRULY_LATE_TAG =
             new OutputTag<CicdEvent>("dora-truly-late-events") {};
 
     private static final Time ALLOWED_LATENESS = Time.hours(5);
-
-    // ════════════════════════════════════════════════════════════════
-    // Historical metric — 1-day tumbling window, default EventTimeTrigger
-    // ════════════════════════════════════════════════════════════════
 
     public static SingleOutputStreamOperator<MetricResult> compute(
             DataStream<CicdEvent> events, Time windowSize) {
@@ -67,17 +42,12 @@ public class DeploymentFrequencyOperator {
                 .aggregate(new DeployCountAgg(), new DeployFreqWindowFn(windowDays));
     }
 
-    // ── Accumulator ────────────────────────────────────────────────────
-
     public static class DeployCount {
         long count = 0;
         String serviceName = "";
-        // Earliest Flink-received time among this window's events — see
-        // SourceTiming and MetricResult.flinkReceivedAtMs.
+
         long minFlinkReceivedAtMs = 0;
     }
-
-    // ── AggregateFunction ──────────────────────────────────────────────
 
     static class DeployCountAgg
             implements AggregateFunction<CicdEvent, DeployCount, DeployCount> {
@@ -102,8 +72,6 @@ public class DeploymentFrequencyOperator {
         }
     }
 
-    // ── ProcessWindowFunction ──────────────────────────────────────────
-
     static class DeployFreqWindowFn
             extends ProcessWindowFunction<DeployCount, MetricResult, String, TimeWindow> {
 
@@ -127,28 +95,8 @@ public class DeploymentFrequencyOperator {
         }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // Live metric — no window, emits on every deploy event
-    // ════════════════════════════════════════════════════════════════
-
-    /**
-     * Sentinel window_start/window_end for the live metric row, so every
-     * emission for the same pipeline shares one Postgres row (upserted in
-     * place via the same unique index used by the windowed metric) instead
-     * of inserting a new row per deploy.
-     */
     private static final String LIVE_WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
-    /**
-     * @param windowSize must be the same bucket size passed to the historical
-     *                   {@link #compute} for the same stream — the live
-     *                   counter resets each time event-time crosses one of
-     *                   these boundaries, so "live count" always means
-     *                   "count so far in the window that's currently open."
-     *                   A mismatched size means the live tile can reset
-     *                   before the historical window ever accumulates more
-     *                   than one event.
-     */
     public static SingleOutputStreamOperator<MetricResult> computeLive(
             DataStream<CicdEvent> events, Time windowSize) {
         return events
@@ -187,31 +135,18 @@ public class DeploymentFrequencyOperator {
             if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
                 long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
                 if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
-                    // This event's own window has already closed per the
-                    // job-global watermark (e.g. another pipeline's future-
-                    // dated sentinel advanced it), even though this key's
-                    // own state hasn't caught up. Only the historical stream
-                    // (allowedLateness) should reflect it — see
-                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+
                     return;
                 }
             }
 
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
-                // Late event belonging to a window that has already closed.
-                // The live tile only reflects the window currently open —
-                // counting this here would silently attribute it to the
-                // wrong window. The historical stream (compute()), which
-                // has allowedLateness, is the source of truth for any
-                // retroactive correction.
+
                 return;
             }
 
             if (currentWindowEnd == null || ts >= currentWindowEnd) {
-                // First event for this key, or this event belongs to a later
-                // window than the one currently being counted (covers the
-                // case where the close-timer below hasn't fired yet, e.g.
-                // several windows are skipped at once).
+
                 counter.clear();
                 if (currentWindowEnd != null) {
                     ctx.timerService().deleteEventTimeTimer(currentWindowEnd - 1);
@@ -237,21 +172,12 @@ public class DeploymentFrequencyOperator {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
-            // A later event can roll the window over early (processElement)
-            // and register a new close-timer without this one having fired
-            // yet. When that happens this timer is stale — the window it
-            // was meant to close already closed early, and counter/windowEnd
-            // now belong to a newer window. Only reset if this timer still
-            // matches the window that's actually open, otherwise it would
-            // wipe out the new window's live count with a stale 0.
+
             Long currentWindowEnd = windowEnd.value();
             if (currentWindowEnd == null || timestamp != currentWindowEnd - 1) {
                 return;
             }
 
-            // Window closed — emit the reset itself so Postgres/Grafana show
-            // 0 immediately, instead of the last window's count sitting
-            // there stale until the next deploy happens.
             counter.clear();
             out.collect(new MetricResult(
                     MetricResult.MetricType.DEPLOYMENT_FREQUENCY_LIVE,

@@ -19,40 +19,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Deployment Failure Pattern Discovery using Flink CEP (Complex Event Processing).
- *
- * Three independent NFAs run over the same pipeline_id-keyed stream. Each
- * models a realistic CI/CD failure narrative — the individual events
- * (a single DEPLOY_FAILED) are not exceptional on their own, but the
- * *sequence* is:
- *
- *  1. Rollback cascade      — DEPLOY_FAILED, DEPLOY_FAILED, ROLLBACK_STARTED
- *                              within 10 min. Two failures that end in an
- *                              automatic rollback.
- *  2. Deployment instability — DEPLOY_FAILED, DEPLOY_STARTED, DEPLOY_FAILED
- *                              within 10 min. A retry that fails again,
- *                              with no rollback (yet).
- *  3. Build OK, deploy broken — BUILD_SUCCESS, DEPLOY_FAILED, DEPLOY_FAILED
- *                              within 15 min. The app compiles fine but
- *                              deployment keeps failing — points at
- *                              infrastructure/config rather than code.
- *
- * Flink CEP features used (per pattern):
- *   Pattern.begin()         → anchor the first event
- *   .followedBy()           → relaxed contiguity (other events can appear between)
- *   .where(SimpleCondition) → filter condition on each pattern step
- *   .within(Time)           → time constraint — pattern must complete within N minutes
- *   CEP.pattern()           → wraps KeyedStream with Flink's NFA engine
- *   PatternStream.select()  → fires when complete match found
- *   PatternTimeoutFunction  → fires when pattern times out (incomplete match)
- *   OutputTag               → routes each pattern's timeout alerts to its own side output
- */
 public class FailurePatternOperator {
 
     private static final Logger LOG = LoggerFactory.getLogger(FailurePatternOperator.class);
 
-    /** Side outputs for partial matches that timed out — one per pattern. */
     public static final OutputTag<String> ROLLBACK_CASCADE_TIMEOUT_TAG =
             new OutputTag<String>("rollback-cascade-timeout") {};
     public static final OutputTag<String> DEPLOY_INSTABILITY_TIMEOUT_TAG =
@@ -60,7 +30,6 @@ public class FailurePatternOperator {
     public static final OutputTag<String> BUILD_OK_DEPLOY_BROKEN_TIMEOUT_TAG =
             new OutputTag<String>("build-ok-deploy-broken-timeout") {};
 
-    /** Shared helper — matches events of a single event_type. */
     private static SimpleCondition<CicdEvent> eventType(String type) {
         return new SimpleCondition<CicdEvent>() {
             @Override
@@ -69,11 +38,6 @@ public class FailurePatternOperator {
             }
         };
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    // Pattern 1 — Rollback cascade
-    //   DEPLOY_FAILED -> DEPLOY_FAILED -> ROLLBACK_STARTED, within 10 min
-    // ════════════════════════════════════════════════════════════════════
 
     public static Pattern<CicdEvent, ?> buildRollbackCascadePattern() {
         return Pattern.<CicdEvent>begin("first_failure")
@@ -165,11 +129,6 @@ public class FailurePatternOperator {
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════
-    // Pattern 2 — Deployment instability
-    //   DEPLOY_FAILED -> DEPLOY_STARTED -> DEPLOY_FAILED, within 10 min
-    // ════════════════════════════════════════════════════════════════════
-
     public static Pattern<CicdEvent, ?> buildDeploymentInstabilityPattern() {
         return Pattern.<CicdEvent>begin("first_failure")
                 .where(eventType("DEPLOY_FAILED"))
@@ -258,11 +217,6 @@ public class FailurePatternOperator {
             return mapper.writeValueAsString(timeout);
         }
     }
-
-    // ════════════════════════════════════════════════════════════════════
-    // Pattern 3 — Build OK, deploy broken
-    //   BUILD_SUCCESS -> DEPLOY_FAILED -> DEPLOY_FAILED, within 15 min
-    // ════════════════════════════════════════════════════════════════════
 
     public static Pattern<CicdEvent, ?> buildBuildOkDeployBrokenPattern() {
         return Pattern.<CicdEvent>begin("build_ok")
@@ -354,8 +308,6 @@ public class FailurePatternOperator {
             return mapper.writeValueAsString(timeout);
         }
     }
-
-    // ── Shared helper ───────────────────────────────────────────────────
 
     private static Map<String, String> stepDetail(String step, CicdEvent e) {
         Map<String, String> m = new HashMap<>();

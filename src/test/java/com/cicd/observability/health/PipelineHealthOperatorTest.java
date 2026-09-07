@@ -16,19 +16,6 @@ import java.util.List;
 
 import static org.junit.Assert.*;
 
-/**
- * JUnit tests for Pipeline Health Score operator.
- *
- * The health score is a weighted composite:
- *   build   × 0.35
- *   test    × 0.25
- *   sonar   × 0.15
- *   package × 0.10
- *   deploy  × 0.15
- *
- * All events successful → score = 100.0 (Elite)
- * All events failed     → score = 0.0   (Low)
- */
 public class PipelineHealthOperatorTest {
 
     private StreamExecutionEnvironment env;
@@ -39,14 +26,6 @@ public class PipelineHealthOperatorTest {
         env.setParallelism(1);
     }
 
-    /**
-     * Floored to a window boundary + 1s, not raw System.currentTimeMillis().
-     * The live tests below place events at base, base+1000, base+15000 etc.
-     * within a 10s window (Time.seconds(10)) — an unaligned wall-clock base
-     * makes whether two events land in the same or a different window a
-     * coin-flip against real time, causing flaky failures unrelated to the
-     * behavior under test.
-     */
     private long alignedBase(long windowMs) {
         return (System.currentTimeMillis() / windowMs) * windowMs + 1000;
     }
@@ -61,7 +40,6 @@ public class PipelineHealthOperatorTest {
         return e;
     }
 
-    /** compute()/computeLive() are event-time based — every test needs a watermark assigned. */
     private DataStream<CicdEvent> withWatermarks(List<CicdEvent> events) {
         return env.fromCollection(events)
                 .assignTimestampsAndWatermarks(
@@ -69,10 +47,6 @@ public class PipelineHealthOperatorTest {
                                 .<CicdEvent>forBoundedOutOfOrderness(Duration.ZERO)
                                 .withTimestampAssigner((e, ts) -> e.getTimestampMs()));
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // All stages succeed → Elite score
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testHealthScore_allSuccess_isElite() throws Exception {
@@ -96,16 +70,10 @@ public class PipelineHealthOperatorTest {
         assertEquals("Elite", r.getPerformanceBand());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Build failures drag score below threshold
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testHealthScore_buildFailures_reducesScore() throws Exception {
         long base = System.currentTimeMillis();
-        // 1 build success + 1 build failure = 50% build rate
-        // test, sonar, package all success = 100%
-        // score = (50 × 0.35) + (100 × 0.25) + (100 × 0.15) + (100 × 0.10) + (100 × 0.15) = 82.5
+
         List<CicdEvent> events = List.of(
                 event("p2", "BUILD_SUCCESS",     "SUCCESS", base),
                 event("p2", "BUILD_FAILED",      "FAILURE", base + 500),
@@ -121,24 +89,15 @@ public class PipelineHealthOperatorTest {
 
         assertFalse(results.isEmpty());
         MetricResult r = results.get(0);
-        assertEquals(82.5, r.getValue(), 1.0); // ±1 tolerance
-        assertNotNull(r.getDetail());           // detail JSON should be populated
+        assertEquals(82.5, r.getValue(), 1.0);
+        assertNotNull(r.getDetail());
         assertTrue(r.getDetail().contains("build"));
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Deploy failures drag score below threshold
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testHealthScore_deployFailures_reducesScore() throws Exception {
         long base = System.currentTimeMillis();
-        // Commit A: build succeeds, deploy fails (e.g. bad configmap).
-        // Commit B: build succeeds, deploy succeeds.
-        // build rate  = 100% (2/2 build successes)
-        // deploy rate = 50%  (1/2 — A's DEPLOY_FAILED, B's DEPLOY_SUCCESS)
-        // test/sonar/package unobserved → default 100%
-        // score = (100 × 0.35) + (100 × 0.25) + (100 × 0.15) + (100 × 0.10) + (50 × 0.15) = 92.5
+
         List<CicdEvent> events = List.of(
                 event("p6", "BUILD_SUCCESS",  "SUCCESS", base),
                 event("p6", "DEPLOY_FAILED",  "FAILURE", base + 500),
@@ -153,13 +112,9 @@ public class PipelineHealthOperatorTest {
 
         assertFalse(results.isEmpty());
         MetricResult r = results.get(0);
-        assertEquals(92.5, r.getValue(), 1.0); // ±1 tolerance
+        assertEquals(92.5, r.getValue(), 1.0);
         assertTrue(r.getDetail().contains("deploy"));
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // All stages fail → Low band
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testHealthScore_allFailures_isLow() throws Exception {
@@ -178,17 +133,10 @@ public class PipelineHealthOperatorTest {
 
         assertFalse(results.isEmpty());
         MetricResult r = results.get(0);
-        // No DEPLOY_ events occur in this test, and rate() defaults an
-        // unobserved category to 100% ("no news is good news"), so the
-        // deploy component still contributes 100 × 0.15 = 15 even though
-        // every observed category (build/test/sonar/package) is at 0%.
+
         assertEquals(15.0, r.getValue(), 0.01);
         assertEquals("Low", r.getPerformanceBand());
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Pipeline ID is correctly set in output
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testHealthScore_pipelineIdPreserved() throws Exception {
@@ -207,10 +155,6 @@ public class PipelineHealthOperatorTest {
         assertEquals(pipelineId, results.get(0).getPipelineId());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Live health score (same pattern as the live deploy/CFR counters)
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testLiveHealthScore_updatesPerEventWithinWindow() throws Exception {
         long base = alignedBase(10_000);
@@ -224,9 +168,6 @@ public class PipelineHealthOperatorTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // score = buildRate*0.35 + (100 for the other 4 categories, no events yet)
-        // Window is still open at end-of-stream, so a trailing reset
-        // (sampleCount=0) follows the two real increments.
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         assertEquals(2, increments.size());
         assertEquals(MetricResult.MetricType.PIPELINE_HEALTH_SCORE_LIVE, increments.get(0).getMetricType());
@@ -240,9 +181,7 @@ public class PipelineHealthOperatorTest {
     @Test
     public void testLiveHealthScore_resetsWhenWindowCloses() throws Exception {
         long base = alignedBase(10_000);
-        // Window size 10s. First window: 1 success + 1 failure = 82.5.
-        // Third event is 15s later — past the boundary — so the tally
-        // must restart (1/1 success = 100), not accumulate to 2/3.
+
         List<CicdEvent> events = List.of(
                 event("p-live-2", "BUILD_SUCCESS", "SUCCESS", base),
                 event("p-live-2", "BUILD_FAILED",  "FAILURE", base + 1000),
@@ -254,8 +193,6 @@ public class PipelineHealthOperatorTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Real increments vs. close-timer resets (window 1 closes
-        // mid-stream, window 2 closes at the final end-of-stream watermark).
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         List<MetricResult> resets     = results.stream().filter(r -> r.getSampleCount() == 0).toList();
 
@@ -272,7 +209,7 @@ public class PipelineHealthOperatorTest {
         long base = alignedBase(10_000);
         List<CicdEvent> events = List.of(
                 event("p-live-3", "BUILD_SUCCESS", "SUCCESS", base + 15000),
-                event("p-live-3", "BUILD_FAILED",  "FAILURE", base + 5000),  // late — belongs to window 1
+                event("p-live-3", "BUILD_FAILED",  "FAILURE", base + 5000),
                 event("p-live-3", "BUILD_SUCCESS", "SUCCESS", base + 16000)
         );
 
@@ -281,8 +218,6 @@ public class PipelineHealthOperatorTest {
                 .executeAndCollect()
                 .forEachRemaining(results::add);
 
-        // Window 2 is still open at end-of-stream, so one trailing reset
-        // (sampleCount=0) follows the two real increments.
         List<MetricResult> increments = results.stream().filter(r -> r.getSampleCount() > 0).toList();
         assertEquals("Late event should be dropped, not emitted at all", 2, increments.size());
         assertEquals("Late failure must not be folded into window 2's score",

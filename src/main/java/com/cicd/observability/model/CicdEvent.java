@@ -5,11 +5,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 
-/**
- * Canonical event model produced by the Jenkins pipeline.
- * Maps exactly to the JSON structure emitted by the Jenkinsfile
- * stageEvent() / stageEventFailure() functions.
- */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CicdEvent implements Serializable {
 
@@ -26,20 +21,8 @@ public class CicdEvent implements Serializable {
     @JsonProperty("event_timestamp") private String eventTimestamp;
     @JsonProperty("status")          private String status;
 
-    /** Epoch-ms assigned by the deserialiser from event_timestamp string. */
     private long timestampMs;
 
-    /**
-     * Epoch-ms Flink wall-clock time at the moment this record was
-     * deserialised (i.e. actually picked up off the Kafka consumer),
-     * set by CicdEventDeserializer via System.currentTimeMillis() —
-     * never from the JSON payload, so a buggy/malicious producer can't
-     * forge or omit it. Distinct from event_timestamp, which is the
-     * simulated/business event time used for watermarks and windowing
-     * (and can be far in the past or future by design, e.g. load-test
-     * data spread across days). inserted_at - this = Flink's own
-     * processing latency once persisted in cicd_metrics.
-     */
     private long flinkReceivedAtMs;
 
     public CicdEvent() {}

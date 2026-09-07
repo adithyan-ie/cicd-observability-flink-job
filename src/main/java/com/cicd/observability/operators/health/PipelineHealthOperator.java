@@ -23,52 +23,13 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 
-/**
- * Pipeline Health Score
- *
- * Two independent streams, same shape as DeploymentFrequencyOperator /
- * DoraOperators' CFR:
- *   - {@link #compute}     → historical, once-per-day score (tumbling
- *     window, default trigger, allowedLateness for corrections).
- *   - {@link #computeLive} → real-time score for the live dashboard tile
- *     (no windowing — recomputes and emits on every event).
- *
- * A SlidingEventTimeWindows was used previously to get "frequent updates,"
- * but that fans every event into size/slide overlapping window instances
- * (e.g. 48 of them for a 1-day/30-min slide) which all fire independently —
- * expensive, and still needed filterChanged() downstream just to keep
- * Postgres from flooding. Splitting into a plain tumbling window (cheap,
- * fires once/day) plus a dedicated live counter (cheap, no window state)
- * gives the same "live" behaviour without the overlapping-window cost.
- *
- * Score formula (identical for both streams — see {@link #buildResult}):
- *   buildSuccessRate  (weight 0.35) × 100
- *   testSuccessRate   (weight 0.25) × 100
- *   sonarPassRate     (weight 0.15) × 100
- *   packageSuccessRate(weight 0.10) × 100
- *   deploySuccessRate (weight 0.15) × 100
- */
 public class PipelineHealthOperator {
 
     private static final Time ALLOWED_LATENESS = Time.hours(5);
 
-    /** Health-stage events too late even for the allowed-lateness grace period. */
     public static final OutputTag<CicdEvent> TRULY_LATE_TAG =
             new OutputTag<CicdEvent>("health-truly-late-events") {};
 
-    // ════════════════════════════════════════════════════════════════
-    // Historical metric — 1-day tumbling window, default EventTimeTrigger
-    // ════════════════════════════════════════════════════════════════
-
-    /**
-     * Truly-late events (beyond ALLOWED_LATENESS) are side-outputted via
-     * TRULY_LATE_TAG — see TrulyLateAuditOperator.auditTrulyLate() for
-     * where these get turned into JSON audit records; wiring lives in
-     * PipelineObservabilityJob.
-     *
-     * @param windowSize must match the value passed to {@link #computeLive}
-     *                   for the same stream — see that method's javadoc.
-     */
     public static SingleOutputStreamOperator<MetricResult> compute(
             DataStream<CicdEvent> events, Time windowSize) {
         return events
@@ -79,13 +40,6 @@ public class PipelineHealthOperator {
                 .aggregate(new HealthAgg(), new HealthWindowFn());
     }
 
-    /**
-     * Keeps only the rows where the performance band (Elite/High/Medium/Low)
-     * actually changed since this pipeline's last emission. Intended for the
-     * live stream below, which emits on every event — the historical window
-     * above only fires once/day (+ late corrections) so it doesn't need
-     * this filter.
-     */
     public static DataStream<MetricResult> filterChanged(DataStream<MetricResult> health) {
         return health
                 .keyBy(MetricResult::getPipelineId)
@@ -113,33 +67,22 @@ public class PipelineHealthOperator {
         }
     }
 
-    // ── Accumulator ────────────────────────────────────────────────────
-
     static class HealthAcc {
-        // Build
+
         long buildTotal = 0, buildSuccess = 0;
-        // Test
+
         long testTotal  = 0, testSuccess  = 0;
-        // SonarQube
+
         long sonarTotal = 0, sonarSuccess = 0;
-        // Package
+
         long pkgTotal   = 0, pkgSuccess   = 0;
-        // Deploy
+
         long deployTotal = 0, deploySuccess = 0;
         String serviceName = "";
-        // Earliest Flink-received time among this window's events — see
-        // SourceTiming and MetricResult.flinkReceivedAtMs.
+
         long minFlinkReceivedAtMs = 0;
     }
 
-    /**
-     * Only a terminal outcome (event_type ending _SUCCESS/_FAILED/_FAILURE)
-     * counts as a sample. A _STARTED event isn't a pass or a fail yet — its
-     * own terminal event will show up later in the same window/lifecycle —
-     * so counting it too would double-count that stage and, worse, count
-     * it as a "success" purely because _STARTED events carry a placeholder
-     * status of SUCCESS (there's no real outcome yet to report).
-     */
     private static boolean isTerminalOutcome(String eventType) {
         return eventType != null
                 && (eventType.endsWith("_SUCCESS")
@@ -147,7 +90,6 @@ public class PipelineHealthOperator {
                  || eventType.endsWith("_FAILURE"));
     }
 
-    /** Shared by both streams so the live and historical scores can never drift apart. */
     private static void accumulate(HealthAcc acc, CicdEvent e) {
         String et = e.getEventType();
         if (!isTerminalOutcome(et)) {
@@ -179,7 +121,6 @@ public class PipelineHealthOperator {
         return total == 0 ? 100.0 : (success * 100.0 / total);
     }
 
-    /** Shared by both streams — builds the weighted composite score + detail JSON. */
     private static MetricResult buildResult(String pipelineId, HealthAcc acc,
                                              MetricResult.MetricType type,
                                              String windowStart, String windowEnd) {
@@ -208,8 +149,6 @@ public class PipelineHealthOperator {
         return r;
     }
 
-    // ── AggregateFunction ──────────────────────────────────────────────
-
     static class HealthAgg
             implements AggregateFunction<CicdEvent, HealthAcc, HealthAcc> {
 
@@ -235,8 +174,6 @@ public class PipelineHealthOperator {
         }
     }
 
-    // ── ProcessWindowFunction ──────────────────────────────────────────
-
     static class HealthWindowFn
             extends ProcessWindowFunction<HealthAcc, MetricResult, String, TimeWindow> {
 
@@ -250,21 +187,8 @@ public class PipelineHealthOperator {
         }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // Live metric — no window, emits on every stage event
-    // ════════════════════════════════════════════════════════════════
-
     private static final String LIVE_WINDOW_MARKER = LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
-    /**
-     * @param windowSize must be the same bucket size passed to {@link #compute}
-     *                   for the same stream — the live tally resets each time
-     *                   event-time crosses one of these boundaries, so "live
-     *                   count" always means "so far in the window that's
-     *                   currently open." A mismatched size means the live
-     *                   tile can reset before the historical window ever
-     *                   accumulates more than one event.
-     */
     public static DataStream<MetricResult> computeLive(DataStream<CicdEvent> events, Time windowSize) {
         return events
                 .keyBy(CicdEvent::getPipelineId)
@@ -295,20 +219,13 @@ public class PipelineHealthOperator {
             if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
                 long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
                 if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
-                    // This event's own window has already closed per the
-                    // job-global watermark (e.g. another pipeline's future-
-                    // dated sentinel advanced it), even though this key's
-                    // own state hasn't caught up. Only the historical stream
-                    // (allowedLateness) should reflect it — see
-                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+
                     return;
                 }
             }
 
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
-                // Late event for an already-closed window — the live tile
-                // only reflects the window currently open; compute() (with
-                // allowedLateness) is the source of truth for corrections.
+
                 return;
             }
 
@@ -330,9 +247,7 @@ public class PipelineHealthOperator {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
-            // Window closed — emit the reset itself so Postgres/Grafana show
-            // a fresh score immediately, instead of the last window's score
-            // sitting there stale until the next event happens.
+
             HealthAcc previous = acc.value();
             String lastServiceName = previous == null ? "" : previous.serviceName;
             acc.clear();

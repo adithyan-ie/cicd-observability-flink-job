@@ -2,37 +2,30 @@ package com.cicd.observability.model;
 
 import java.io.Serializable;
 
-/**
- * Generic output model for all computed metrics.
- * Serialised to JSON and sunk to Kafka output topics.
- */
 public class MetricResult implements Serializable {
 
     public enum MetricType {
-        // DORA
+
         DEPLOYMENT_FREQUENCY,
         DEPLOYMENT_FREQUENCY_LIVE,
         LEAD_TIME_FOR_CHANGES,
         CHANGE_FAILURE_RATE,
         CHANGE_FAILURE_RATE_LIVE,
         MEAN_TIME_TO_RECOVERY,
-        // Health
+
         PIPELINE_HEALTH_SCORE,
         PIPELINE_HEALTH_SCORE_LIVE,
-        // Late events
+
         LATE_EVENT_DETECTED,
         LATE_EVENT_CORRECTED,
-        // Late-event audit counts, one per windowed metric that has its own
-        // allowedLateness — metric_type alone disambiguates these rows from
-        // each other and from the real metric, so no extra column is needed.
+
         DEPLOYMENT_FREQUENCY_LATE_EVENTS,
         CHANGE_FAILURE_RATE_LATE_EVENTS,
         PIPELINE_HEALTH_SCORE_LATE_EVENTS,
-        // CEP
+
         FAILURE_PATTERN_DETECTED,
         PATTERN_TIMEOUT,
-        // Job-global event-time watermark, reported periodically for
-        // dashboard/testing visibility — see WatermarkReporterOperator.
+
         WATERMARK
     }
 
@@ -42,15 +35,11 @@ public class MetricResult implements Serializable {
     private String       windowStartMs;
     private String       windowEndMs;
     private double     value;
-    private String     performanceBand;   // Elite / High / Medium / Low
+    private String     performanceBand;
     private long       sampleCount;
-    private String     detail;            // JSON blob for complex results
+    private String     detail;
     private long       computedAtMs;
-    // Earliest CicdEvent.flinkReceivedAtMs among the event(s) that produced
-    // this result (min, for windowed/aggregated metrics — see SourceTiming)
-    // — 0 if unknown. inserted_at - this = Flink's own processing latency
-    // once persisted in cicd_metrics: time from the FIRST relevant event
-    // being deserialised by Flink to this result landing.
+
     private long       flinkReceivedAtMs;
 
     public MetricResult() {
@@ -104,7 +93,6 @@ public class MetricResult implements Serializable {
         }
     }
 
-    // ── Getters / Setters ──────────────────────────────────────────────
     public MetricType getMetricType()            { return metricType; }
     public void       setMetricType(MetricType v){ this.metricType = v; }
     public String  getPipelineId()               { return pipelineId; }

@@ -8,23 +8,8 @@ import org.apache.flink.util.Collector;
 
 import java.time.Instant;
 
-/**
- * Shared truly-late audit trail — turns any windowed operator's
- * TRULY_LATE_TAG side output into a JSON record, tagged with which metric's
- * window it missed. Reused across DeploymentFrequencyOperator,
- * DoraOperators.changeFailureRate, and PipelineHealthOperator so all three
- * land in the same Postgres LATE_EVENT audit trail — one generic "unable to
- * process as truly late" panel, distinguishing rows by `source_metric`
- * rather than needing a separate panel per metric.
- */
 public class TrulyLateAuditOperator {
 
-    /**
-     * @param trulyLateEvents a metric operator's TRULY_LATE_TAG side output
-     * @param sourceMetric    identifies which metric's window this event
-     *                        missed (e.g. "DEPLOYMENT_FREQUENCY",
-     *                        "CHANGE_FAILURE_RATE", "PIPELINE_HEALTH_SCORE")
-     */
     public static SingleOutputStreamOperator<String> auditTrulyLate(
             DataStream<CicdEvent> trulyLateEvents, String sourceMetric) {
 

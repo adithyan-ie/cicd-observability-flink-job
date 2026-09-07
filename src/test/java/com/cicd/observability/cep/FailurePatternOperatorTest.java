@@ -17,20 +17,6 @@ import java.util.List;
 
 import static org.junit.Assert.*;
 
-/**
- * JUnit tests for FailurePatternOperator's three Flink CEP deployment-failure
- * patterns:
- *
- *  1. Rollback cascade      — DEPLOY_FAILED -> DEPLOY_FAILED -> ROLLBACK_STARTED, within 10 min
- *  2. Deployment instability — DEPLOY_FAILED -> DEPLOY_STARTED -> DEPLOY_FAILED, within 10 min
- *  3. Build OK, deploy broken — BUILD_SUCCESS -> DEPLOY_FAILED -> DEPLOY_FAILED, within 15 min
- *
- * Uses Flink's local StreamExecutionEnvironment with a bounded, watermarked
- * source (same approach as DoraOperatorsTest) so .within() is evaluated
- * against real event-time gaps, not wall-clock execution time — otherwise
- * the "outside window" tests would trivially pass regardless of the
- * timestamps used, since executeAndCollect() runs in milliseconds.
- */
 public class FailurePatternOperatorTest {
 
     private StreamExecutionEnvironment env;
@@ -42,8 +28,6 @@ public class FailurePatternOperatorTest {
         env.setParallelism(1);
         base = LocalDateTime.parse("2026-07-08T23:07:00");
     }
-
-    // ── Helpers ────────────────────────────────────────────────────────
 
     private CicdEvent event(String pipelineId, String eventType, String status, LocalDateTime eventTime) {
         CicdEvent e = new CicdEvent();
@@ -58,7 +42,6 @@ public class FailurePatternOperatorTest {
         return e;
     }
 
-    /** Bounded, event-time-watermarked, pipeline-keyed stream — what detect*() expects. */
     private DataStream<CicdEvent> keyedStream(List<CicdEvent> events) {
         return env.fromCollection(events)
                 .assignTimestampsAndWatermarks(
@@ -67,11 +50,6 @@ public class FailurePatternOperatorTest {
                                 .withTimestampAssigner((e, ts) -> e.getTimestampMs()))
                 .keyBy(CicdEvent::getPipelineId);
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Pattern 1 — Rollback cascade
-    //   DEPLOY_FAILED -> DEPLOY_FAILED -> ROLLBACK_STARTED, within 10 min
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testRollbackCascade_fullSequence_emitsAlert() throws Exception {
@@ -96,7 +74,7 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testRollbackCascade_missingRollback_noAlert() throws Exception {
-        // Two failures but no rollback — should not produce a complete match.
+
         List<CicdEvent> events = List.of(
                 event("pipe-rb-2", "DEPLOY_FAILED", "FAILURE", base),
                 event("pipe-rb-2", "DEPLOY_FAILED", "FAILURE", base.plusMinutes(2))
@@ -113,7 +91,7 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testRollbackCascade_outsideWindow_noAlert() throws Exception {
-        // Rollback arrives 12 minutes after the first failure — exceeds the 10-min window.
+
         List<CicdEvent> events = List.of(
                 event("pipe-rb-3", "DEPLOY_FAILED",    "FAILURE", base),
                 event("pipe-rb-3", "DEPLOY_FAILED",    "FAILURE", base.plusMinutes(2)),
@@ -131,13 +109,12 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testRollbackCascade_withInterveningNoiseEvents_stillMatches() throws Exception {
-        // .followedBy() uses relaxed contiguity — unrelated events between
-        // the pattern's steps must not block the match.
+
         List<CicdEvent> events = List.of(
                 event("pipe-rb-4", "DEPLOY_FAILED",    "FAILURE", base),
-                event("pipe-rb-4", "BUILD_STARTED",    "SUCCESS", base.plusSeconds(30)), // noise
+                event("pipe-rb-4", "BUILD_STARTED",    "SUCCESS", base.plusSeconds(30)),
                 event("pipe-rb-4", "DEPLOY_FAILED",    "FAILURE", base.plusMinutes(2)),
-                event("pipe-rb-4", "BUILD_SUCCESS",    "SUCCESS", base.plusMinutes(3)),  // noise
+                event("pipe-rb-4", "BUILD_SUCCESS",    "SUCCESS", base.plusMinutes(3)),
                 event("pipe-rb-4", "ROLLBACK_STARTED", "FAILURE", base.plusMinutes(4))
         );
 
@@ -176,7 +153,7 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testRollbackCascade_partialMatch_firesTimeoutSideOutput() throws Exception {
-        // Only the first failure — the window will expire with a partial match.
+
         List<CicdEvent> events = List.of(
                 event("pipe-rb-5", "DEPLOY_FAILED", "FAILURE", base)
         );
@@ -192,11 +169,6 @@ public class FailurePatternOperatorTest {
         assertTrue(timeouts.get(0).contains("DEPLOY_ROLLBACK_CASCADE_TIMEOUT"));
         assertTrue(timeouts.get(0).contains("pipe-rb-5"));
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Pattern 2 — Deployment instability
-    //   DEPLOY_FAILED -> DEPLOY_STARTED -> DEPLOY_FAILED, within 10 min
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testInstability_fullSequence_emitsAlert() throws Exception {
@@ -220,8 +192,7 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testInstability_noRetryBetweenFailures_noAlert() throws Exception {
-        // Two DEPLOY_FAILED events back-to-back, no DEPLOY_STARTED retry between
-        // them — this is the rollback-cascade shape, not deployment instability.
+
         List<CicdEvent> events = List.of(
                 event("pipe-in-2", "DEPLOY_FAILED", "FAILURE", base),
                 event("pipe-in-2", "DEPLOY_FAILED", "FAILURE", base.plusMinutes(2))
@@ -253,11 +224,6 @@ public class FailurePatternOperatorTest {
                 alerts.isEmpty());
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // Pattern 3 — Build OK, deploy broken
-    //   BUILD_SUCCESS -> DEPLOY_FAILED -> DEPLOY_FAILED, within 15 min
-    // ══════════════════════════════════════════════════════════════════
-
     @Test
     public void testBuildBroken_fullSequence_emitsAlert() throws Exception {
         List<CicdEvent> events = List.of(
@@ -281,7 +247,7 @@ public class FailurePatternOperatorTest {
 
     @Test
     public void testBuildBroken_buildFailedInstead_noAlert() throws Exception {
-        // BUILD_FAILED, not BUILD_SUCCESS — the pattern's anchor never matches.
+
         List<CicdEvent> events = List.of(
                 event("pipe-bb-2", "BUILD_FAILED",  "FAILURE", base),
                 event("pipe-bb-2", "DEPLOY_FAILED", "FAILURE", base.plusMinutes(3)),
@@ -313,10 +279,6 @@ public class FailurePatternOperatorTest {
         assertTrue("Sequence spanning more than 15 minutes should not emit a complete-match alert",
                 alerts.isEmpty());
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // Pattern structure sanity checks
-    // ══════════════════════════════════════════════════════════════════
 
     @Test
     public void testPatternStructures_areNotNull() {

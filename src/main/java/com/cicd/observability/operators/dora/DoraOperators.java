@@ -27,26 +27,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * DORA Metrics #2, #3, #4
- *
- * Lead Time for Changes — KeyedProcessFunction with MapState
- *   Stores BUILD_STARTED timestamp per pipeline, computes duration
- *   when DEPLOY_SUCCESS arrives for the same pipeline.
- *   Flink managed MapState survives crashes and restarts.
- *
- * Change Failure Rate — TumblingEventTimeWindows + AggregateFunction
- *   Counts total deploys and failed deploys in a 7-day window.
- *
- * Mean Time to Recovery — KeyedProcessFunction with MapState
- *   Stores INCIDENT_OPEN timestamp keyed by pipelineId,
- *   computes duration when BUILD_SUCCESS follows.
- */
 public class DoraOperators {
-
-    // ══════════════════════════════════════════════════════════════════
-    // #2 — Lead Time for Changes
-    // ══════════════════════════════════════════════════════════════════
 
     public static DataStream<MetricResult> leadTime(DataStream<CicdEvent> events) {
         return events
@@ -60,15 +41,9 @@ public class DoraOperators {
     static class LeadTimeProcessFn
             extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
 
-        /**
-         * Flink MapState — keyed by commitSha, stores build-start epoch-ms.
-         * Lives in Flink's managed state (RocksDB in production) — not a
-         * Java Map in memory, so it survives job restarts automatically.
-         */
         private transient MapState<String, Long> buildStartTimes;
-        /** Flink-received time (CicdEvent.flinkReceivedAtMs) of the BUILD_STARTED event, keyed by commitSha — see MetricResult.flinkReceivedAtMs. */
+
         private transient MapState<String, Long> buildStartFlinkReceivedAt;
-      //  private transient ValueState<List<Double>> leadTimeSamples;
 
         @Override
         public void open(Configuration cfg) {
@@ -76,17 +51,14 @@ public class DoraOperators {
                     new MapStateDescriptor<>("build-start-times", Types.STRING, Types.LONG));
             buildStartFlinkReceivedAt = getRuntimeContext().getMapState(
                     new MapStateDescriptor<>("build-start-flink-received-at", Types.STRING, Types.LONG));
-//            leadTimeSamples = getRuntimeContext().getState(
-//                    new ValueStateDescriptor<>("lead-time-samples",
-//                            Types.LIST(Types.DOUBLE)));
+
         }
 
         @Override
         public void processElement(CicdEvent e, Context ctx,
                                    Collector<MetricResult> out) throws Exception {
             if ("BUILD_STARTED".equals(e.getEventType())) {
-                // Store the timestamp keyed by commitSha so we can match
-                // it when the deploy event for the same commit arrives.
+
                 buildStartTimes.put(e.getCommitSha(), e.getTimestampMs());
                 buildStartFlinkReceivedAt.put(e.getCommitSha(), e.getFlinkReceivedAtMs());
 
@@ -94,34 +66,24 @@ public class DoraOperators {
                 Long startMs = buildStartTimes.get(e.getCommitSha());
                 if (startMs != null) {
                     double leadMins = (e.getTimestampMs() - startMs) / 60_000.0;
-//                    List<Double> samples = leadTimeSamples.value();
-//                    if (samples == null) samples = new ArrayList<>();
-//                    samples.add(leadMins);
-//                    leadTimeSamples.update(samples);
+
                     Long startFlinkReceivedAt = buildStartFlinkReceivedAt.get(e.getCommitSha());
                     buildStartTimes.remove(e.getCommitSha());
                     buildStartFlinkReceivedAt.remove(e.getCommitSha());
 
-                    // Emit a rolling sample for Grafana dashboards
                     MetricResult leadTimeMetric = new MetricResult(
                             MetricResult.MetricType.LEAD_TIME_FOR_CHANGES,
                             e.getPipelineId(), e.getServiceName(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
                             leadMins, 1);
-                    // BUILD_STARTED's receive time, not DEPLOY_SUCCESS's —
-                    // see SourceTiming javadoc on why the earlier event is used.
+
                     leadTimeMetric.setFlinkReceivedAtMs(startFlinkReceivedAt != null ? startFlinkReceivedAt : 0);
                     out.collect(leadTimeMetric);
                 }
 
             } else if ("DEPLOY_FAILED".equals(e.getEventType())) {
-                // This commit's deploy failed, so it will never receive a
-                // matching DEPLOY_SUCCESS — a fix ships as a new commit with
-                // its own BUILD_STARTED instead. Drop the orphaned entry
-                // rather than leaving it in state forever; no lead-time
-                // sample is emitted since this commit never reached a
-                // successful deploy.
+
                 buildStartTimes.remove(e.getCommitSha());
                 buildStartFlinkReceivedAt.remove(e.getCommitSha());
             }
@@ -130,26 +92,15 @@ public class DoraOperators {
         @Override
         public void onTimer(long ts, OnTimerContext ctx,
                             Collector<MetricResult> out) throws Exception {
-            // No timer needed — we emit on every deploy event
+
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // #3 — Change Failure Rate
-    // ══════════════════════════════════════════════════════════════════
-
     private static final Time CFR_ALLOWED_LATENESS = Time.hours(5);
 
-    /** CFR deploy events too late even for the allowed-lateness grace period. */
     public static final OutputTag<CicdEvent> CFR_TRULY_LATE_TAG =
             new OutputTag<CicdEvent>("cfr-truly-late-events") {};
 
-    /**
-     * Truly-late events (beyond CFR_ALLOWED_LATENESS) are side-outputted via
-     * CFR_TRULY_LATE_TAG — see TrulyLateAuditOperator.auditTrulyLate() for
-     * where these get turned into JSON audit records; wiring lives in
-     * PipelineObservabilityJob.
-     */
     public static SingleOutputStreamOperator<MetricResult> changeFailureRate(
             DataStream<CicdEvent> events, Time windowSize) {
 
@@ -166,8 +117,7 @@ public class DoraOperators {
     static class CfrAcc {
         long total = 0, failed = 0;
         String serviceName = "";
-        // Earliest Flink-received time among this window's events — see
-        // SourceTiming and MetricResult.flinkReceivedAtMs.
+
         long minFlinkReceivedAtMs = 0;
     }
 
@@ -211,18 +161,9 @@ public class DoraOperators {
         }
     }
 
-    // ── Live counter — same pattern as DeploymentFrequencyOperator's live
-    //    stream: no window, resets on the window's close boundary, drops
-    //    events that belong to an already-closed window instead of
-    //    miscounting them into the current one. ─────────────────────────
-
     private static final String CFR_LIVE_WINDOW_MARKER =
             LocalDateTime.of(1970, 1, 1, 0, 0, 0).toString();
 
-    /**
-     * @param windowSize same bucket size as {@link #changeFailureRate}'s
-     *                   window (e.g. 7 days in production).
-     */
     public static SingleOutputStreamOperator<MetricResult> changeFailureRateLive(
             DataStream<CicdEvent> events, Time windowSize) {
         return events
@@ -261,20 +202,13 @@ public class DoraOperators {
             if (FlinkConfig.LIVE_COUNTER_WATERMARK_GATE) {
                 long eventWindowEnd = ((ts / windowMs) + 1) * windowMs;
                 if (ctx.timerService().currentWatermark() >= eventWindowEnd) {
-                    // This event's own window has already closed per the
-                    // job-global watermark (e.g. another pipeline's future-
-                    // dated sentinel advanced it), even though this key's
-                    // own state hasn't caught up. Only the historical stream
-                    // (allowedLateness) should reflect it — see
-                    // FlinkConfig.LIVE_COUNTER_WATERMARK_GATE.
+
                     return;
                 }
             }
 
             if (currentWindowEnd != null && ts < currentWindowEnd - windowMs) {
-                // Late event for an already-closed window — the live tile
-                // only reflects the window currently open; changeFailureRate()
-                // (with allowedLateness) is the source of truth for corrections.
+
                 return;
             }
 
@@ -313,21 +247,12 @@ public class DoraOperators {
 
         @Override
         public void onTimer(long timestamp, OnTimerContext ctx, Collector<MetricResult> out) throws Exception {
-            // A later event can roll the window over early (processElement)
-            // and register a new close-timer without this one having fired
-            // yet. When that happens this timer is stale — the window it
-            // was meant to close already closed early, and total/failed now
-            // belong to a newer window. Only reset if this timer still
-            // matches the window that's actually open, otherwise it would
-            // wipe out the new window's live rate with a stale 0%.
+
             Long currentWindowEnd = windowEnd.value();
             if (currentWindowEnd == null || timestamp != currentWindowEnd - 1) {
                 return;
             }
 
-            // Window closed — emit the reset itself so Postgres/Grafana show
-            // 0% immediately, instead of the last window's rate sitting
-            // there stale until the next deploy/failure happens.
             total.clear();
             failed.clear();
             out.collect(new MetricResult(
@@ -337,10 +262,6 @@ public class DoraOperators {
                     0.0, 0));
         }
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    // #4 — Mean Time to Recovery (MTTR)
-    // ══════════════════════════════════════════════════════════════════
 
     public static DataStream<MetricResult> mttr(DataStream<CicdEvent> events) {
         return events
@@ -353,9 +274,8 @@ public class DoraOperators {
     static class MttrProcessFn
             extends KeyedProcessFunction<String, CicdEvent, MetricResult> {
 
-        /** Flink ValueState — stores the timestamp of the last BUILD_FAILED event. */
         private transient ValueState<Long> failureStartMs;
-        /** Flink-received time (CicdEvent.flinkReceivedAtMs) of that BUILD_FAILED event — see MetricResult.flinkReceivedAtMs. */
+
         private transient ValueState<Long> failureStartFlinkReceivedAtMs;
 
         @Override
@@ -370,7 +290,7 @@ public class DoraOperators {
         public void processElement(CicdEvent e, Context ctx,
                                    Collector<MetricResult> out) throws Exception {
             if ("BUILD_FAILED".equals(e.getEventType())) {
-                // Record when the failure started
+
                 failureStartMs.update(e.getTimestampMs());
                 failureStartFlinkReceivedAtMs.update(e.getFlinkReceivedAtMs());
 
@@ -388,8 +308,7 @@ public class DoraOperators {
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(startMs), ZoneOffset.UTC).toString(),
                             LocalDateTime.ofInstant(Instant.ofEpochMilli(e.getTimestampMs()), ZoneOffset.UTC).toString(),
                             mttrMins, 1);
-                    // BUILD_FAILED's receive time, not BUILD_SUCCESS's — see
-                    // SourceTiming javadoc on why the earlier event is used.
+
                     r.setFlinkReceivedAtMs(startFlinkReceivedAt != null ? startFlinkReceivedAt : 0);
                     out.collect(r);
                 }

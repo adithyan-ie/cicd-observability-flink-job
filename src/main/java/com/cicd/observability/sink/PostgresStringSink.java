@@ -11,23 +11,6 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 
-/**
- * PostgreSQL sink for CEP failure-pattern alerts, pattern timeouts,
- * and late-event audit records — all stored as JSONB.
- *
- * Table schema (run once):
- * ──────────────────────────────────────────────────────────────────
- *  CREATE TABLE cicd_alerts (
- *      id          BIGSERIAL PRIMARY KEY,
- *      alert_type  VARCHAR(60)   NOT NULL,
- *      payload     JSONB         NOT NULL,
- *      inserted_at TIMESTAMPTZ   DEFAULT NOW()
- *  );
- *
- *  CREATE INDEX idx_cicd_alerts_type ON cicd_alerts (alert_type);
- *  CREATE INDEX idx_cicd_alerts_payload ON cicd_alerts USING gin(payload);
- * ──────────────────────────────────────────────────────────────────
- */
 public class PostgresStringSink extends RichSinkFunction<String> {
 
     private static final long serialVersionUID = 1L;
